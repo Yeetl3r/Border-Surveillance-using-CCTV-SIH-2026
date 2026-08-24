@@ -1,0 +1,43 @@
+# SENTINEL -- Phase 1 dependencies.
+#
+# PyTorch is NOT pinned here: it must match your CUDA build. On Blackwell
+# (sm_120) install it first from the cu128 index, then this file:
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   pip install -r requirements.txt
+#
+# Verified working set on the target machine: torch 2.11.0+cu128,
+# torchvision 0.26.0+cu128, Python 3.13.7, RTX 5080.
+
+# --- core pipeline -----------------------------------------------------------
+opencv-python>=4.10,<6
+numpy>=1.26
+shapely>=2.0
+pydantic>=2.7
+PyYAML>=6.0
+
+# --- detection / tracking (F1, F2, F16) --------------------------------------
+# AGPL-3.0. See README "Honest limitations" -- RF-DETR is the permissive swap.
+ultralytics>=8.4,<9
+lap>=0.5
+
+# --- API and interface (F10, F12) --------------------------------------------
+fastapi>=0.115
+uvicorn[standard]>=0.30
+websockets>=13
+jinja2>=3.1
+
+# --- forensic grounding (F11) ------------------------------------------------
+# transformers is pinned: LocateAnything-3B's remote code needs the qwen3
+# modelling classes, absent before 4.57. peft and lmdb are imported by that
+# remote code. decord is deliberately NOT installed -- it has no wheels for
+# current Python and SENTINEL passes single images, so a scoped stub is
+# registered in sys.modules instead (see query/visual_route.py).
+transformers==4.57.1
+peft>=0.14
+lmdb>=1.4
+Pillow>=10.0
+huggingface_hub>=0.25
+
+# --- tests -------------------------------------------------------------------
+pytest>=8.0

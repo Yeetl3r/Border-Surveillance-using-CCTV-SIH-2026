@@ -1,0 +1,92 @@
+# CAM-01 -- demo camera, night IR driveway approach.
+#
+# Source: assets/sample_border.mp4  (1280x720, 15 fps, H.264 @ ~97 kbps)
+# This clip is genuinely degraded: monochrome IR, heavy compression blocking,
+# low contrast. That is the point -- the problem statement says "existing CCTV
+# infrastructure", and a system demonstrated on clean video has not addressed it.
+
+camera_id: cam01
+name: CAM-01 // NORTH APPROACH
+source: assets/sample_border.mp4
+loop: true
+enabled: true
+pace_to_source_fps: true
+
+# ---------------------------------------------------------------------------
+# F3 -- ground-plane homography
+# ---------------------------------------------------------------------------
+# HONESTY NOTE: these world coordinates are ESTIMATED, not surveyed. They come
+# from a pinhole model fitted to the scene (f ~= 640 px for ~90 deg HFOV at
+# 1280 px, camera height ~2.2 m, negligible tilt), not from four physically
+# measured ground marks. On a real deployment an operator marks four points on
+# a known patch with a tape measure and these numbers are replaced.
+#
+# The geometry is exact; the SCALE is assumed. Distances below are therefore
+# reported as metres with a stated assumption, never as surveyed truth. The UI
+# labels this camera's calibration as ESTIMATED for the same reason.
+#
+# World frame: X = lateral metres (+right), Y = metres from camera along the
+# ground. Residual on the four fit points is 0.000 m (a ground plane maps to
+# the image by an exact homography).
+homography:
+  enabled: true
+  fixed_camera: true          # PTZ would invalidate H on every pan -- not supported
+  homography_id: cam01-pinhole-est-v1
+  image_points:  [[350, 470], [900, 460], [980, 715], [120, 715]]
+  world_points:  [[-5.80, 12.80], [5.72, 14.08], [2.11, 3.97], [-3.22, 3.97]]
+  scale_check_m: null         # set to a known length once the scene is measured
+
+# ---------------------------------------------------------------------------
+# F4 -- directional tripwire, in ground metres
+# ---------------------------------------------------------------------------
+# The subject's footpoint track through H runs 5.34 m -> 3.91 m, monotonically
+# approaching. A line at Y = 4.6 m is crossed inbound at about frame 13.
+#
+# inbound_sign is the sign of the cross product on the side that counts as
+# "inside our perimeter". Direction is the entire reason to use a tripwire
+# rather than a containment test: infiltration and exfiltration are
+# operationally different events and a polygon cannot tell them apart.
+tripwires:
+  - id: perimeter_line
+    label: NORTH PERIMETER
+    space: metric
+    points: [[-6.0, 4.6], [6.0, 4.6]]
+    inbound_sign: -1          # approaching the camera = entering the compound
+    # The parked vehicle sits inside the perimeter and never moves, so it is
+    # excluded here; wildlife is excluded because it is the canonical false
+    # alarm this domain is built around.
+    groups: [person]
+
+# ---------------------------------------------------------------------------
+# F4 -- restricted zone (containment, distinct from the tripwire above)
+# ---------------------------------------------------------------------------
+zones:
+  - id: inner_compound
+    label: INNER COMPOUND
+    space: metric
+    kind: restricted
+    points: [[-6.0, 4.6], [6.0, 4.6], [6.0, 2.0], [-6.0, 2.0]]
+    groups: [person]
+
+# ---------------------------------------------------------------------------
+# F5 -- metric proximity ring around a protected asset
+# ---------------------------------------------------------------------------
+# The parked vehicle sits at (1.90, 3.94) m. Measured minimum person-to-vehicle
+# distance across the clip is 1.22 m, so a 1.5 m ring fires partway through the
+# approach rather than immediately -- which is what makes it a demonstration of
+# a threshold rather than of a constant.
+proximity:
+  - id: asset_vehicle
+    label: PROTECTED ASSET
+    geometry: point
+    space: metric
+    points: [[1.90, 3.94]]
+    threshold_m: 1.5
+    # The asset IS the parked vehicle, so testing vehicles against it would
+    # report the car as 0.0 m from itself. Only people and animals approach
+    # an asset; the asset does not approach itself.
+    groups: [person, animal]
+
+# Per-camera detector overrides. SAHI stays off here: the subject is 200 px
+# tall, nowhere near the small-target regime that justifies tiling's cost.
+detector_overrides: {}

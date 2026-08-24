@@ -1,0 +1,37 @@
+# OPERATIONAL profile -- field values.
+#
+# Deliberately more reluctant than demo. In this domain a system that produces
+# many correct detections plus many false alarms is an operational failure:
+# the operator learns to ignore it and the detector's accuracy stops mattering.
+# When in doubt, suppress.
+
+baggage:
+  dwell_s: 120.0          # a bag is not abandoned because someone set it down
+  reclaim_grace_s: 5.0
+
+confirm:
+  window_s: 3.0           # longer window, higher bar
+  min_ratio: 0.7
+  min_hits: 6
+  overrides:
+    HEALTH_FAULT:   {window_s: 1.0, min_ratio: 0.8, min_hits: 3}
+    BAG_UNATTENDED: {window_s: 4.0, min_ratio: 0.7, min_hits: 5}
+    STANCE_ANOMALY: {window_s: 6.0, min_ratio: 0.8, min_hits: 12}
+
+alerts:
+  clear_after_s: 15.0
+  expire_after_s: 1800.0
+
+detector:
+  conf: 0.30
+
+identity:
+  sim_threshold: 0.66     # stricter: a false FRIENDLY is worse than an
+                          # UNIDENTIFIED that turns out to be a patrol
+  embed_every_n_frames: 8
+
+health:
+  consecutive_bad: 8
+
+runtime:
+  target_fps: 25.0

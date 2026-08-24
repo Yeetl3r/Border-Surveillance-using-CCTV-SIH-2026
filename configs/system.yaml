@@ -1,0 +1,222 @@
+# SENTINEL -- system configuration
+#
+# Single source of truth for every threshold in the system. Nothing in the
+# code carries a magic number; if you want to change behaviour, change it here.
+#
+# Load order:  system.yaml  <-  profiles/<runtime.profile>.yaml  <-  CLI overrides
+# Cameras are read from configs/cameras/*.yaml, one file per camera.
+
+runtime:
+  device: auto            # auto | cuda | cpu
+  profile: demo           # which overlay in profiles/ to apply
+  offline: true           # F15 -- refuse all network access at runtime
+  log_level: INFO
+  target_fps: 25.0
+
+# ---------------------------------------------------------------------------
+# Tier 1 -- perception
+# ---------------------------------------------------------------------------
+detector:
+  model: yolo26s.pt       # YOLO26-s: NMS-free, DFL removed, STAL assignment
+  imgsz: 960
+  conf: 0.25              # low on purpose -- recall here, precision in Tier 3
+  iou: 0.7
+  half: true
+  max_det: 300
+  # F1: person / vehicle / animal / bag from stock COCO ids. No fine-tuning.
+  # NOTE: COCO has no generic "bag" class. backpack(24) / handbag(26) /
+  # suitcase(28) are the closest available and are among COCO's weakest
+  # classes at CCTV range. This is F6's weakest link -- measure it early.
+  class_groups:
+    person:  [0]
+    # boat(8) is in the vehicle group on operational grounds -- riverine
+    # crossing is a documented CIBMS gap ("gaps remained at rivers and
+    # nullahs"). It also happens to matter here: in this camera's IR footage
+    # the parked car is classified as `boat` at 0.29-0.58 confidence, which is
+    # a clean illustration of what degraded input does to a COCO detector.
+    vehicle: [1, 2, 3, 5, 7, 8]           # bicycle car motorcycle bus truck boat
+    animal:  [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    bag:     [24, 26, 28]                 # backpack handbag suitcase
+  sahi:
+    enabled: false        # enable per camera where targets are beyond ~150 m
+    tile: 640
+    overlap: 0.2
+    merge_iou: 0.55
+    min_frame_px: 900
+
+tracker:
+  kind: botsort           # botsort | bytetrack -- both wired (F2)
+  track_high_thresh: 0.5
+  track_low_thresh: 0.1
+  new_track_thresh: 0.6
+  track_buffer: 60        # frames a lost track survives; ~2.4 s at 25 fps
+  match_thresh: 0.8
+  fuse_score: true
+  gmc_method: sparseOptFlow
+  proximity_thresh: 0.5
+  appearance_thresh: 0.25
+  with_reid: false
+
+pose:                     # F16 -- infiltration stance
+  enabled: false          # see README: high-false-alarm signal, opt in knowingly
+  model: yolo26s-pose.pt
+  imgsz: 320
+  conf: 0.35
+  min_keypoints: 5
+  keypoint_conf: 0.35
+  suppress_edge_clipped: true
+  edge_margin_px: 4
+  max_crops_per_frame: 6
+  prone_ratio: 0.65
+  crouch_ratio: 0.85
+
+# ---------------------------------------------------------------------------
+# Tier 0 -- health and operator stream
+# ---------------------------------------------------------------------------
+health:                   # F9 -- anti-tamper
+  enabled: true
+  blur_min: 55.0
+  ssim_min: 0.55
+  ssim_size: 160
+  freeze_max_frames: 25
+  ref_update_alpha: 0.02
+  consecutive_bad: 5
+  check_within_s: 1.0     # the brief's only hard latency requirement
+
+enhance:                  # OPERATOR STREAM ONLY -- never the detection path
+  enabled: true
+  mode: clahe             # none | clahe | dcp | clahe+dcp
+  clahe_clip: 2.5
+  clahe_grid: 8
+  dcp_omega: 0.85
+  dcp_patch: 11
+  dcp_t0: 0.1
+
+# ---------------------------------------------------------------------------
+# Tier 3 -- temporal
+# ---------------------------------------------------------------------------
+confirm:                  # F7 -- in seconds and a hit ratio, NOT frame count
+  window_s: 2.0
+  min_ratio: 0.6
+  min_hits: 3
+  overrides:
+    HEALTH_FAULT:   {window_s: 0.8, min_ratio: 0.7, min_hits: 2}
+    BAG_UNATTENDED: {window_s: 1.5, min_ratio: 0.6, min_hits: 2}
+    STANCE_ANOMALY: {window_s: 3.0, min_ratio: 0.7, min_hits: 5}
+
+baggage:                  # F6 -- distances in metres via homography
+  enabled: true
+  assoc_radius_m: 2.5
+  detach_distance_m: 4.0
+  dwell_s: 15.0           # DEMO value; operational default is 120 s
+  reclaim_grace_s: 2.0
+  min_bag_conf: 0.30
+  assoc_radius_px: 120.0  # uncalibrated fallback only; observation marked degraded
+  detach_distance_px: 220.0
+
+alerts:
+  clear_after_s: 6.0
+  expire_after_s: 600.0
+  max_live: 500
+  conf_high: 0.75
+  conf_medium: 0.50
+  # THE THREAT MATRIX -- observation kind x identity verdict -> colour.
+  # This is the core semantic of the system. It is here, not in code, so it
+  # can be argued about by people who know the operational domain.
+  threat_matrix:
+    TRIPWIRE_CROSS:
+      FRIENDLY: FRIENDLY
+      UNIDENTIFIED: CRITICAL
+      INSUFFICIENT_QUALITY: WARNING
+      NONE: WARNING
+    ZONE_PRESENCE:
+      FRIENDLY: FRIENDLY
+      UNIDENTIFIED: WARNING
+      INSUFFICIENT_QUALITY: WATCH
+      NONE: WATCH
+    PROXIMITY:
+      FRIENDLY: INFO
+      UNIDENTIFIED: WARNING
+      INSUFFICIENT_QUALITY: WATCH
+      NONE: WATCH
+    BAG_UNATTENDED:  {NONE: WARNING}
+    STANCE_ANOMALY:
+      FRIENDLY: WATCH
+      UNIDENTIFIED: WARNING
+      INSUFFICIENT_QUALITY: WATCH
+      NONE: WATCH
+    IDENTITY_UNKNOWN: {NONE: WATCH}
+    HEALTH_FAULT:     {NONE: WARNING}
+    SENSOR_CUE:       {NONE: WATCH}
+
+# ---------------------------------------------------------------------------
+# Tier 5 -- identity (open-set)
+# ---------------------------------------------------------------------------
+identity:                 # F8
+  enabled: true
+  weights: osnet_x0_25_msmt17.pth      # MIT, author's release, trained on MSMT17
+  gallery_dir: data/gallery
+  # MEASURED, not chosen. tools/measure_threshold.py on assets/sample_border.mp4:
+  #   same-subject similarity   min 0.7068  p5 0.7752  median 0.8941  (n=780)
+  #   negative proxy            p95 0.5564  max 0.5711               (n=2400)
+  # 0.666 sits between the two. NOTE the negative set here is person-vs-
+  # non-person, a weak proxy: the distribution that matters is person vs a
+  # DIFFERENT person, and the demo clip contains only one subject. Re-run with
+  # multi-subject footage before treating this as validated.
+  sim_threshold: 0.666
+  min_crop_h: 96
+  min_crop_w: 32
+  min_blur: 25.0
+  min_det_conf: 0.45
+  embed_every_n_frames: 8
+  max_crops_per_frame: 4
+
+# ---------------------------------------------------------------------------
+# Tier 6 / 9 -- VLM grounding and query
+# ---------------------------------------------------------------------------
+vlm:                      # F11
+  enabled: true
+  model_id: nvidia/LocateAnything-3B
+  local_dir: weights/LocateAnything-3B
+  device: auto
+  dtype: bfloat16
+  max_new_tokens: 2048
+  max_image_side: 1024
+  timeout_s: 60.0
+  queue_depth: 1          # never queue a 3B job -- reject with 503 instead
+  licence: "NVIDIA Open Model License -- non-commercial research only"
+
+query:
+  max_rows: 200
+  default_window_h: 24
+
+# ---------------------------------------------------------------------------
+# Tier 8 -- relay, storage, pipeline
+# ---------------------------------------------------------------------------
+relay:                    # F14
+  enabled: true
+  max_bytes: 3072
+  crop_max_px: 160
+  jpeg_quality_start: 60
+  jpeg_quality_min: 15
+  out_dir: data/relay
+
+storage:
+  db_path: data/db/sentinel.db
+  evidence_dir: data/evidence
+  clip_dir: data/clips
+  clip_pre_s: 3.0
+  clip_post_s: 3.0
+  keep_clip_frames: 300
+
+pipeline:                 # bounded queues, explicit drop policy, all counted
+  q_decode: 4             # drop-oldest
+  q_crops: 16             # drop-newest
+  q_alerts: 256           # drop lowest severity, never CRITICAL
+  q_evidence: 64          # block -- evidence loss is unacceptable
+  jpeg_quality: 72
+  stream_max_width: 1280
+
+api:
+  host: 127.0.0.1
+  port: 8000

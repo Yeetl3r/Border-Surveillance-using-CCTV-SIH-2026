@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SENTINEL // Border Surveillance C2</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <main class="shell">
+
+      <header class="topbar">
+        <div class="brand">
+          <div class="radar" aria-hidden="true"></div>
+          <div>
+            <h1>SENTINEL</h1>
+            <div class="sub">Border Surveillance C2 &middot; SIH26187</div>
+          </div>
+        </div>
+
+        <div class="threatbar" id="threatbar" data-threat="INFO">
+          <div>
+            <div class="cap">Sector threat</div>
+            <div class="lvl" id="threatlvl">INFO</div>
+          </div>
+          <div class="cap" id="threatsub">sector clear</div>
+        </div>
+
+        <div class="chips">
+          <span class="chip" id="chip-link"><i class="dot pulse"></i>LINK <b>...</b></span>
+          <span class="chip" id="chip-health"><i class="dot"></i>CAM <b>--</b></span>
+          <span class="chip" id="chip-drops">DROPPED <b>0</b></span>
+          <span class="chip" id="chip-counters">ALERTS <b>0/0</b></span>
+          <span class="chip good">OFFLINE <b>F15</b></span>
+        </div>
+      </header>
+
+      <section class="workspace">
+
+        <!-- ============ left: live picture ============ -->
+        <div class="col">
+          <div class="panel" style="flex:1 1 auto">
+            <header>
+              <span class="tag">CAM</span>
+              <span id="cam-name">--</span>
+              <div class="right">
+                <span>FRAME <b id="hud-frame">0</b></span>
+                <span>TRACKS <b id="hud-tracks">0</b></span>
+                <span>FPS <b id="hud-fps">0</b></span>
+              </div>
+            </header>
+
+            <div class="stage">
+              <img id="video" alt="live camera feed">
+              <canvas id="overlay"></canvas>
+              <div class="badge">OPERATOR STREAM &middot; <b>CLAHE</b> &middot; detector sees RAW</div>
+              <div class="cal" id="cal">--</div>
+            </div>
+
+            <div class="healthstrip">
+              <span class="kv">detect <b id="hud-detect">0ms</b></span><span class="sep">|</span>
+              <span class="kv">track <b id="hud-track">0ms</b></span><span class="sep">|</span>
+              <span class="kv">logic <b id="hud-logic">0ms</b></span><span class="sep">|</span>
+              <span class="kv">blur <b id="hud-blur">0</b></span><span class="sep">|</span>
+              <span class="kv">ssim <b id="hud-ssim">0</b></span><span class="sep">|</span>
+              <span class="kv">bags <b id="hud-bags">none</b></span>
+            </div>
+          </div>
+
+          <!-- F12: the two axes, stated explicitly for the operator -->
+          <div class="panel">
+            <header><span class="tag">F12</span> Dual-axis rendering</header>
+            <div class="body legend">
+              <div class="grp">
+                <span>THREAT / COLOUR</span>
+                <span class="sw info"><i></i>INFO</span>
+                <span class="sw friendly"><i></i>FRIENDLY</span>
+                <span class="sw watch"><i></i>WATCH</span>
+                <span class="sw warning"><i></i>WARNING</span>
+                <span class="sw critical"><i></i>CRITICAL</span>
+              </div>
+              <div class="grp">
+                <span>CONFIDENCE / STYLE</span>
+                <span class="sw solid"><i></i>HIGH</span>
+                <span class="sw dashed"><i></i>MEDIUM</span>
+                <span class="sw hatched"><i></i>LOW</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tier 9 query router -->
+          <div class="panel">
+            <header>
+              <span class="tag">TIER 9</span> Query router
+              <div class="right"><span>SQL &middot; identity &middot; grounding</span></div>
+            </header>
+            <div class="body">
+              <form class="queryrow" id="qform">
+                <input id="q" placeholder="e.g. when was the last critical alert?" autocomplete="off">
+                <button id="qbtn" type="submit">RUN</button>
+              </form>
+              <div class="suggests">
+                <button type="button">when was the last alert?</button>
+                <button type="button">how many perimeter breaches today?</button>
+                <button type="button">show live alerts</button>
+                <button type="button">who is track #1?</button>
+                <button type="button">where is the person in this frame?</button>
+              </div>
+              <div class="qresult" id="qresult"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ right: alerts / evidence / system ============ -->
+        <div class="col">
+          <div class="panel" style="flex:1 1 auto">
+            <div class="tabs">
+              <button data-tab="live" class="on">ALERTS</button>
+              <button data-tab="evidence">EVIDENCE</button>
+              <button data-tab="system">SYSTEM</button>
+            </div>
+
+            <div class="body" id="pane-live">
+              <div class="alertlist" id="alerts"></div>
+            </div>
+
+            <div class="body" id="pane-evidence" hidden>
+              <div id="evidence">
+                <div class="empty">Select an alert to inspect its evidence.
+
+Every alert stores the keyframe it fired on, a crop of the subject, a clip of the run-up, every supporting detection with its own confidence and model id, the triggering geometry, and the thresholds in force at the time.</div>
+              </div>
+            </div>
+
+            <div class="body" id="pane-system" hidden>
+              <div id="system"></div>
+            </div>
+          </div>
+        </div>
+
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

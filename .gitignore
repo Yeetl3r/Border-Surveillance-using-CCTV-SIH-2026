@@ -1,0 +1,25 @@
+# Model weights -- fetched once via scripts/fetch_weights.py (F15)
+weights/
+*.pt
+*.pth
+*.safetensors
+
+# Runtime data: alert log, evidence, clips, relay payloads, gallery
+data/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.claude/
+.vscode/*
+!.vscode/launch.json

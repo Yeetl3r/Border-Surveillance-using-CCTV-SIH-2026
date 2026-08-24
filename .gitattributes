@@ -1,0 +1,12 @@
+# Normalise line endings in the repository so a Windows <-> macOS handoff does
+# not produce whole-file diffs. See docs/HANDOFF-apple-silicon.md.
+* text=auto eol=lf
+
+# Binary assets: never touch.
+*.mp4  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.pt   binary
+*.pth  binary
+*.safetensors binary
