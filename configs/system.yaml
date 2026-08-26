@@ -69,6 +69,82 @@ pose:                     # F16 -- infiltration stance
   max_crops_per_frame: 6
   prone_ratio: 0.65
   crouch_ratio: 0.85
+  # Crawling human vs quadruped -- the discrimination that box shape cannot do,
+  # because a person on hands and knees and a dog are the same shape.
+  #
+  # Above quadruped_aspect the class label alone is not trusted and the POSE
+  # model is asked whether it sees a person. Its own confidence is the signal:
+  # it is trained to detect people and nothing else, so it already encodes
+  # "is this a human body" better than any statistic built on the keypoints.
+  #
+  # MEASURED on 121 person crops (assets/tamper_test.mp4) against 1,533 animal
+  # crops (COCO cats and dogs):
+  #   people    p5 0.208   median 0.826   p95 0.939
+  #   animals   p5 0.000   median 0.000   p95 0.633
+  # The animal median of zero is the result that matters: on most animal crops
+  # the pose model returns no person at all. At 0.37 the split keeps 90% of
+  # people and admits 11% of animals at the crop level.
+  #
+  # End to end through disambiguate(), which also demands min_keypoints visible
+  # joints, the false reclassification rate is lower: MEASURED at 3.1% -- 25 of
+  # 807 eligible animal tracks across 1,086 real animal images. That is a
+  # per-frame rate, and STANCE_ANOMALY needs 5 hits at a 0.7 ratio over 3 s, so
+  # it does not reach an alert.
+  quadruped_aspect: 0.95
+  human_skeleton_min: 0.37
+
+threat:                   # specialised detectors -- see perception/threat.py
+  weapons:
+    enabled: false        # needs weights/weapons_yolo26n.pt
+    model: weapons_yolo26n.pt
+    imgsz: 320
+    # Higher than the perimeter detector's 0.25. A weapon claim escalates
+    # immediately, so this is one of the few places worth buying precision
+    # with recall.
+    #
+    # MEASURED, both halves of the trade. Recall is against 1,062 held-out
+    # ground-truth weapons; the false-positive column is boxes drawn over 260
+    # frames of assets/sample_border.mp4, which contains no weapons at all.
+    # (A separate sweep over 324 person crops from assets/tamper_test.mp4 gave
+    # the same ordering: 7.4% of crops fired at 0.45, 1.2% at 0.70, 0% at 0.85.)
+    #   conf   recall    false boxes / 260 frames
+    #   0.45   64.9%     3
+    #   0.60   59.4%     ~2
+    #   0.70   53.4%     1
+    #   0.85   40.9%     0
+    # Zero false WEAPON_VISIBLE ALERTS at every one of these -- temporal
+    # confirmation already removes the flicker, so this threshold is only
+    # buying a cleaner picture, not a quieter alert list. 0.60 is the middle:
+    # it halves what an audience sees without giving up the recall that makes
+    # the detector worth running.
+    conf: 0.60
+    max_crops_per_frame: 4
+    min_crop_h: 64
+    crop_pad: 0.15
+  aerial:
+    enabled: false        # needs weights/drones_yolo26n.pt
+    model: drones_yolo26n.pt
+    imgsz: 960            # drones are small; do not downscale them away
+    # MEASURED against 1,078 held-out drones and 442 frames of drone-free demo
+    # footage. The size cap is doing real work here, not just the threshold:
+    #   conf  max_area   recall   frames with a false drone
+    #   0.35     35%     74.8%      10.0%
+    #   0.50     none    71.3%       0.9%
+    #   0.50     35%     68.9%       0.2%   <- configured
+    #   0.60     none    62.6%       0.0%
+    # The cap buys 6 points of recall over simply raising the threshold, and
+    # it does so by encoding something true about the deployment rather than
+    # by tuning a number.
+    conf: 0.50
+    max_area_frac: 0.35
+    every_n_frames: 2
+    # Bird rejection is done BETWEEN models: this detector proposes, the stock
+    # COCO model's class 14 disputes, and the more confident wins. A withheld
+    # candidate is shown but never confirmed -- counting withheld birds as hits
+    # would produce the alert the rejection exists to prevent.
+    bird_class_id: 14
+    bird_iou: 0.45
+    bird_margin: 1.0
 
 # ---------------------------------------------------------------------------
 # Tier 0 -- health and operator stream
@@ -103,6 +179,12 @@ confirm:                  # F7 -- in seconds and a hit ratio, NOT frame count
     HEALTH_FAULT:   {window_s: 0.8, min_ratio: 0.7, min_hits: 2}
     BAG_UNATTENDED: {window_s: 1.5, min_ratio: 0.6, min_hits: 2}
     STANCE_ANOMALY: {window_s: 3.0, min_ratio: 0.7, min_hits: 5}
+    # A single frame of a rifle is a flicker, not an event -- but a weapon is
+    # also the thing you least want to be slow about, so this is the shortest
+    # window that still requires corroboration.
+    WEAPON_VISIBLE: {window_s: 1.5, min_ratio: 0.5, min_hits: 2}
+    # The aerial detector runs every 2nd frame, so 3 hits spans ~6 frames.
+    AERIAL_INTRUSION: {window_s: 2.5, min_ratio: 0.5, min_hits: 3}
 
 baggage:                  # F6 -- distances in metres via homography
   enabled: true
@@ -145,6 +227,15 @@ alerts:
       UNIDENTIFIED: WARNING
       INSUFFICIENT_QUALITY: WATCH
       NONE: WATCH
+    # A weapon on an enrolled friendly is a guard on patrol. A weapon on
+    # someone we cannot identify is the alert this system exists to raise.
+    WEAPON_VISIBLE:
+      FRIENDLY: INFO
+      UNIDENTIFIED: CRITICAL
+      INSUFFICIENT_QUALITY: WARNING
+      NONE: CRITICAL
+    # A drone has no identity to weigh, so there is one entry and it is high.
+    AERIAL_INTRUSION: {NONE: CRITICAL}
     IDENTITY_UNKNOWN: {NONE: WATCH}
     HEALTH_FAULT:     {NONE: WARNING}
     SENSOR_CUE:       {NONE: WATCH}

@@ -32,6 +32,8 @@ class ObservationKind(str, Enum):
     BAG_UNATTENDED = "BAG_UNATTENDED"      # F6 -- dwell timer expired
     STANCE_ANOMALY = "STANCE_ANOMALY"      # F16 -- crawling / prone
     IDENTITY_UNKNOWN = "IDENTITY_UNKNOWN"  # F8 -- person not in friendly gallery
+    WEAPON_VISIBLE = "WEAPON_VISIBLE"      # specialised detector on a person crop
+    AERIAL_INTRUSION = "AERIAL_INTRUSION"  # specialised detector, full frame
     HEALTH_FAULT = "HEALTH_FAULT"          # F9 -- tamper or signal loss
     SENSOR_CUE = "SENSOR_CUE"              # Phase 2 -- external cue (DAS sim)
 

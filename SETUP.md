@@ -118,6 +118,27 @@ python run.py --check                # environment gate only, no server
 
 Open <http://127.0.0.1:8000>.
 
+### The four demonstrations
+
+`docs/DEMOS.md` walks through each one — video tampering, weapon detection,
+drone detection, and animal versus crawling human — with what to watch for and
+what to say about it. The demo profile enables the pose model and both
+specialised detectors; `configs/system.yaml` leaves all three off, because each
+costs runtime and each is a claim the system should not make by default.
+
+The two specialised detectors need weights that are **committed to this repo**
+(`weights/weapons_yolo26n.pt`, `weights/drones_yolo26n.pt`) rather than fetched
+by `scripts/fetch_weights.py` — they are the output of a training run against
+specific datasets, not something upstream publishes. If either is missing the
+system fails at startup with a message naming the file, which is deliberate: a
+demo where the detector silently never fires is worse than one that refuses to
+start. To retrain either:
+
+```bash
+python scripts/fetch_datasets.py --task weapons   # or drones
+python tools/train_detector.py --task weapons --epochs 60
+```
+
 ### Pointing it at your own camera
 
 1. Copy `configs/cameras/cam01.yaml` to `cam02.yaml`, change `camera_id` and
@@ -133,7 +154,7 @@ Open <http://127.0.0.1:8000>.
 ## 5. Verifying it actually works
 
 ```bash
-python -m pytest                     # 48 tests, ~1.3 s, no GPU
+python -m pytest                     # 70 tests, ~1.5 s, no GPU
 python scripts/verify_env.py         # hardware + weights + config gate
 python tools/measure_threshold.py    # re-fit the F8 threshold on your footage
 python tools/render_demo.py --stills 3   # annotated stills into out/

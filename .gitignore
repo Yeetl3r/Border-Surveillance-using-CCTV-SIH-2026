@@ -1,8 +1,15 @@
-# Model weights -- fetched once via scripts/fetch_weights.py (F15)
-weights/
+# Model weights -- fetched once via scripts/fetch_weights.py (F15).
+# `weights/*` rather than `weights/`, because git cannot re-include a file
+# whose parent directory is excluded, and the two trained detectors below have
+# to travel with the repo: they are the output of a GPU training run against
+# specific datasets, not something a fresh clone can fetch from upstream.
 *.pt
 *.pth
 *.safetensors
+weights/*
+# Last matching pattern wins, so these two survive the *.pt rule above.
+!weights/weapons_yolo26n.pt
+!weights/drones_yolo26n.pt
 
 # Runtime data: alert log, evidence, clips, relay payloads, gallery
 data/

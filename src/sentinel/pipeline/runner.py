@@ -76,6 +76,7 @@ class CameraPipeline:
 
         self.detector: YoloDetector = shared["detector"]
         self.pose = shared.get("pose")
+        self.threat = shared.get("threat")
         self.zones = ZoneSet.from_camera(cam)
         self.tracker = ObjectTracker(cfg.tracker, cam.camera_id,
                                      self.detector.mapper, self.detector.class_names)
@@ -163,11 +164,22 @@ class CameraPipeline:
         self.perf.track.append(time.perf_counter() - t0)
 
         if self.pose is not None:
+            # Order matters: settle WHAT the subject is before asking what
+            # posture it is in. Stance on a misclassified animal is meaningless.
+            self.pose.disambiguate(tracks, bundle.raw)
             self.pose.annotate(tracks, bundle.raw)
 
         # -- Tier 2 / 5 ------------------------------------------------------
         t0 = time.perf_counter()
         spatial_obs = self.spatial.analyse(tracks, bundle.frame_idx, bundle.captured_at)
+        if self.threat is not None:
+            # The specialised detectors need the perimeter detections as well
+            # as the tracks: the drone model resolves bird-versus-drone against
+            # them, which it cannot do from tracks alone (a bird is rarely
+            # tracked long enough to become one).
+            spatial_obs += self.threat.scan(
+                tracks, dets, bundle.raw, bundle.camera_id,
+                bundle.frame_idx, bundle.captured_at)
         self.identity.resolve(tracks, bundle.raw, bundle.frame_idx)
 
         # -- Tier 3 ----------------------------------------------------------
@@ -228,6 +240,10 @@ class CameraPipeline:
                 "edge_clipped": t.latest.edge_clipped,
                 "owner_track_id": t.owner_track_id,
                 "age": t.age_frames,
+                "human_skeleton": t.meta.get("human_skeleton"),
+                "reclassified": t.meta.get("reclassified"),
+                "quadruped_note": t.meta.get("quadruped_note"),
+                "weapon": t.meta.get("weapon"),
             })
 
         return {
@@ -240,6 +256,12 @@ class CameraPipeline:
                        "ssim": bundle.health.ssim_ref,
                        "detail": bundle.health.detail},
             "bags": self.temporal.baggage.snapshot(),
+            # Drones are drawn from their own list, not from boxes: they are
+            # not tracked. `withheld` carries the candidates the perimeter
+            # model disputed as birds, so the panel can show restraint
+            # rather than simply showing nothing.
+            "aerial": {"drones": self.threat.aerial_boxes if self.threat else [],
+                       "withheld": self.threat.withheld if self.threat else []},
             "perf": self.perf.as_dict(),
             "metric": self.zones.metric,
         }
@@ -307,6 +329,14 @@ class SentinelSystem:
             from ..perception import PoseEstimator
             self.pose = PoseEstimator(cfg)
 
+        # Specialised detectors. Constructed only if enabled -- each one loads
+        # its own weights, and a missing weights file should fail loudly at
+        # startup rather than silently on the first frame that needed it.
+        self.threat = None
+        if cfg.threat.weapons.enabled or cfg.threat.aerial.enabled:
+            from ..perception import ThreatDetectors
+            self.threat = ThreatDetectors(cfg)
+
         self.embedder = build_embedder(cfg)
         self.gallery = FriendlyGallery(cfg, self.embedder)
         self.identity = IdentityResolver(cfg, self.embedder, self.gallery)
@@ -317,6 +347,7 @@ class SentinelSystem:
             tracker=cfg.tracker.kind,
             embedder=self.embedder.model_id,
             pose=(self.pose.model_id if self.pose else ""),
+            threat=(self.threat.model_ids if self.threat else ""),
             vlm=(cfg.vlm.model_id if cfg.vlm.enabled else ""),
         )
         self.relay = RelayEncoder(cfg)
@@ -327,6 +358,7 @@ class SentinelSystem:
             cfg.profile_name, cfg.snapshot(), self.evidence.model_ids)
 
         shared = {"detector": self.detector, "pose": self.pose,
+                  "threat": self.threat,
                   "identity": self.identity, "alerts": self.alerts}
         self.pipelines: dict[str, CameraPipeline] = {}
         for cam in cfg.cameras:

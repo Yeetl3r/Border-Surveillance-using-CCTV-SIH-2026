@@ -64,6 +64,88 @@ class PoseEstimator:
         self.model_id = f"{Path(p.model).stem}"
         self.device = 0 if _cuda() else "cpu"
 
+    def human_evidence(self, crop: np.ndarray) -> tuple[float, int, np.ndarray | None]:
+        """How strongly does this crop contain a HUMAN skeleton?
+
+        Returns ``(score, visible_keypoints, keypoints)``. The score is the mean
+        confidence of the visible COCO-17 joints, which a pose model trained on
+        people does not produce for a dog, a cow or a goat: it may fire weakly
+        on an animal's head and legs, but it will not resolve a coherent
+        shoulder-hip-knee chain.
+
+        This is the discriminator for crawling-human-versus-quadruped. Box
+        aspect ratio cannot do it -- a person on hands and knees and a dog are
+        the same shape -- and the class label alone cannot either, because a
+        detector trained on upright people frequently calls a crawling person
+        an animal and occasionally calls a large dog a person.
+        """
+        if crop is None or crop.size == 0 or crop.shape[0] < 32:
+            return 0.0, 0, None
+        r = self.model.predict(crop, imgsz=self.cfg.imgsz, conf=0.05,
+                               device=self.device, verbose=False)[0]
+        if r.keypoints is None or len(r.keypoints.data) == 0 or r.boxes is None:
+            return 0.0, 0, None
+
+        # The score is the POSE MODEL'S OWN person confidence, not an aggregate
+        # invented on top of the keypoints. That model is trained to detect
+        # people and nothing else, so its confidence already encodes "is this a
+        # human body" far better than any hand-rolled keypoint statistic --
+        # an earlier version scored the mean joint confidence weighted by how
+        # much of the torso chain resolved, and it did not separate: real people
+        # scored a median of 0.36, straddling any threshold worth setting.
+        confs = r.boxes.conf.cpu().numpy()
+        i = int(np.argmax(confs))
+        score = float(confs[i])
+
+        kd = r.keypoints.data.cpu().numpy()
+        k = kd[i] if i < len(kd) else kd[0]
+        n = int((k[:, 2] >= self.cfg.keypoint_conf).sum())
+        return round(score, 3), n, k
+
+    def disambiguate(self, tracks: list[Track], frame: np.ndarray) -> None:
+        """Separate a crawling human from a quadruped, on evidence.
+
+        Applied to animal detections and to low-slung person detections -- the
+        two directions the confusion runs. The verdict and the evidence behind
+        it are written onto the track so an alert can explain itself rather
+        than simply asserting a class.
+        """
+        if not self.cfg.enabled:
+            return
+
+        h, w = frame.shape[:2]
+        candidates = [
+            t for t in tracks
+            if t.group in (ObjectGroup.ANIMAL, ObjectGroup.PERSON)
+            and t.latest.aspect_ratio >= self.cfg.quadruped_aspect
+            and not (self.cfg.suppress_edge_clipped and t.latest.edge_clipped)
+        ]
+        candidates.sort(key=lambda t: -(t.latest.height_px))
+
+        for t in candidates[: self.cfg.max_crops_per_frame]:
+            x1, y1, x2, y2 = (int(max(0, v)) for v in t.latest.bbox_px)
+            crop = frame[y1:min(h, y2), x1:min(w, x2)]
+            score, n, _k = self.human_evidence(crop)
+            t.meta["human_skeleton"] = score
+            t.meta["keypoints_visible"] = n
+
+            if score >= self.cfg.human_skeleton_min and n >= self.cfg.min_keypoints:
+                if t.group is ObjectGroup.ANIMAL:
+                    # A coherent human skeleton outranks the class label. This
+                    # is the crawling-infiltrator case the detector gets wrong.
+                    t.meta["reclassified"] = (
+                        f"detected as {t.latest.class_name} but resolves a human "
+                        f"skeleton ({n} joints, score {score:.2f}) -- treated as a person")
+                    t.group = ObjectGroup.PERSON
+            elif t.group is ObjectGroup.PERSON:
+                # Low-slung, and no human skeleton resolves. Do not claim a
+                # crawling infiltrator on that evidence.
+                t.meta["quadruped_note"] = (
+                    f"low-slung person detection with no resolvable human skeleton "
+                    f"({n} joints, score {score:.2f}) -- stance withheld")
+                t.stance = Stance.UNKNOWN
+                t.stance_confidence = 0.0
+
     def annotate(self, tracks: list[Track], frame: np.ndarray) -> None:
         """Set ``stance`` and ``stance_confidence`` on person tracks, in place."""
         if not self.cfg.enabled:

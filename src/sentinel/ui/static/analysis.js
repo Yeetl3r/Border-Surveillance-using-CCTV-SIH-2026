@@ -201,6 +201,8 @@ function draw() {
     if (id && id.label === "FRIENDLY") bits.push((id.matched || "FRIENDLY").toUpperCase());
     else if (id && id.label === "UNIDENTIFIED") bits.push("UNIDENTIFIED");
     if (b.stance && !["UNKNOWN", "STANDING"].includes(b.stance)) bits.push(b.stance);
+    if (b.weapon) bits.push(b.weapon.toUpperCase());
+    if (b.reclassified) bits.push("HUMAN");
     const label = bits.join(" · ");
 
     ctx.save();
@@ -209,6 +211,52 @@ function draw() {
     const ly = Math.max(0, y - 20);
     ctx.fillStyle = c; ctx.fillRect(x, ly, tw, 17);
     ctx.fillStyle = "#080506"; ctx.fillText(label, x + 6, ly + 12);
+    ctx.restore();
+  }
+
+  drawAerial(ctx, X, Y, scale);
+}
+
+// Drones are drawn separately because they are not tracked: they have no
+// ground footpoint, and the tracker's motion model assumes a ground plane.
+function drawAerial(ctx, X, Y, scale) {
+  const a = S.overlay.aerial;
+  if (!a) return;
+
+  for (const d of a.drones || []) {
+    const [x1, y1, x2, y2] = d.bbox_px;
+    const x = X(x1), y = Y(y1), bw = (x2 - x1) * scale, bh = (y2 - y1) * scale;
+    ctx.save();
+    ctx.strokeStyle = col("CRITICAL"); ctx.lineWidth = 2; ctx.setLineDash([]);
+    ctx.strokeRect(x, y, bw, bh);
+    // A reticle: an aerial contact reads differently from a ground box.
+    ctx.beginPath();
+    ctx.moveTo(x + bw / 2, y - 7); ctx.lineTo(x + bw / 2, y - 1);
+    ctx.moveTo(x + bw / 2, y + bh + 1); ctx.lineTo(x + bw / 2, y + bh + 7);
+    ctx.stroke();
+    const label = `AERIAL · ${Number(d.conf).toFixed(2)}`;
+    ctx.font = "500 10px 'IBM Plex Mono', ui-monospace, monospace";
+    const tw = ctx.measureText(label).width + 12;
+    ctx.fillStyle = col("CRITICAL"); ctx.fillRect(x, Math.max(0, y - 20), tw, 17);
+    ctx.fillStyle = "#080506"; ctx.fillText(label, x + 6, Math.max(0, y - 20) + 12);
+    ctx.restore();
+  }
+
+  // Withheld candidates. Showing the rejection is the point: an operator who
+  // can see the system decline a bird trusts it more than one that is simply
+  // silent, and it is the only visible evidence that the check ran at all.
+  for (const wv of a.withheld || []) {
+    const [x1, y1, x2, y2] = wv.bbox_px;
+    const x = X(x1), y = Y(y1), bw = (x2 - x1) * scale, bh = (y2 - y1) * scale;
+    ctx.save();
+    ctx.strokeStyle = "rgba(160,160,170,.75)";
+    ctx.lineWidth = 1.2; ctx.setLineDash([3, 4]);
+    ctx.strokeRect(x, y, bw, bh);
+    ctx.setLineDash([]);
+    const label = `BIRD · drone ${Number(wv.drone_conf).toFixed(2)} vs bird ${Number(wv.bird_conf).toFixed(2)}`;
+    ctx.font = "500 9px 'IBM Plex Mono', ui-monospace, monospace";
+    ctx.fillStyle = "rgba(160,160,170,.9)";
+    ctx.fillText(label, x, Math.max(9, y - 5));
     ctx.restore();
   }
 }

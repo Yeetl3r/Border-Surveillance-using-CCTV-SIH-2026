@@ -118,6 +118,17 @@ class PoseCfg(BaseModel):
     prone_ratio: float = 0.65
     crouch_ratio: float = 0.85
 
+    # Crawling human vs quadruped. A box wider than this is low-slung enough
+    # that class alone cannot be trusted: a person on hands and knees and a
+    # dog are the same shape, and the detector confuses them in both
+    # directions. Above this aspect ratio the pose model is asked whether a
+    # coherent HUMAN skeleton resolves, and that answer outranks the label.
+    quadruped_aspect: float = 0.95
+    # Measured: people p5 0.208 / median 0.826 (n=121) against animals
+    # p95 0.633 / median 0.000 (n=1533). At 0.37 the split keeps 90% of
+    # people and admits 11% of animals. See configs/system.yaml.
+    human_skeleton_min: float = 0.37
+
 
 # ---------------------------------------------------------------------------
 # Tier 0 -- health and operator stream
@@ -474,11 +485,68 @@ class CameraCfg(BaseModel):
 # ---------------------------------------------------------------------------
 # Root
 # ---------------------------------------------------------------------------
+class WeaponCfg(BaseModel):
+    """Specialised weapon detector, run on person crops.
+
+    Cropped rather than full-frame on purpose: a rifle at 80 m is a handful of
+    pixels in a 1920-wide frame, and the only scale at which it is legible is
+    the person box that has already been detected and tracked. Running the
+    small model on a few crops is also cheaper than running it on every frame.
+    """
+
+    enabled: bool = False
+    model: str = "weapons_yolo26n.pt"
+    imgsz: int = 320
+    # Higher than the perimeter detector's. A weapon claim is a claim that
+    # escalates immediately, so it is one place to buy precision with recall.
+    conf: float = 0.45
+    max_crops_per_frame: int = 4
+    min_crop_h: int = 64
+    crop_pad: float = 0.15
+
+
+class AerialCfg(BaseModel):
+    """Specialised drone detector, run on the full frame.
+
+    Full-frame rather than cropped, because unlike a weapon there is no parent
+    object to crop to -- a drone is not attached to anything the perimeter
+    model tracks.
+    """
+
+    enabled: bool = False
+    model: str = "drones_yolo26n.pt"
+    imgsz: int = 960          # drones are small; do not downscale them away
+    conf: float = 0.50
+    every_n_frames: int = 2   # sky changes slowly; halve the cost
+    # A drone filling a third of a surveillance frame is not a perimeter
+    # intrusion -- it is a close-up, and the training set is full of them
+    # (44% of its boxes cover more than 2.25% of the image). This cap encodes
+    # the deployment context rather than the training distribution, and it is
+    # what stops the model calling an entire dark scene a drone.
+    max_area_frac: float = 0.35
+    # Bird rejection. The stock COCO detector carries bird as class 14 and was
+    # trained on far more bird imagery than any drone set contains, so the
+    # discrimination is made BETWEEN models rather than by a thin bird class
+    # trained alongside the drone. A drone box that a confident stock bird
+    # detection overlaps is withheld, and the reason is recorded.
+    bird_class_id: int = 14
+    bird_iou: float = 0.45
+    bird_margin: float = 1.0  # bird_conf must exceed drone_conf x this to win
+
+
+class ThreatCfg(BaseModel):
+    """Specialised detectors that answer questions the perimeter model cannot."""
+
+    weapons: WeaponCfg = Field(default_factory=WeaponCfg)
+    aerial: AerialCfg = Field(default_factory=AerialCfg)
+
+
 class SystemCfg(BaseModel):
     runtime: RuntimeCfg = Field(default_factory=RuntimeCfg)
     detector: DetectorCfg = Field(default_factory=DetectorCfg)
     tracker: TrackerCfg = Field(default_factory=TrackerCfg)
     pose: PoseCfg = Field(default_factory=PoseCfg)
+    threat: ThreatCfg = Field(default_factory=ThreatCfg)
     health: HealthCfg = Field(default_factory=HealthCfg)
     enhance: EnhanceCfg = Field(default_factory=EnhanceCfg)
     spatial: SpatialCfg = Field(default_factory=SpatialCfg)

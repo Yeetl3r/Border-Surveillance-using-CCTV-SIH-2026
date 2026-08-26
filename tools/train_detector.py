@@ -9,17 +9,27 @@ extra classes on the main detector: a weapon is looked for on a person crop
 that has already been detected and tracked, which is the only scale at which a
 rifle at range is more than a handful of pixels.
 
-Class design
-------------
-The public weapon set carries 29 labels with heavy duplication (`Guns`/`guns`,
-`Pistol`/`pistol`/`pistols`, `Rifle`/`rifle`), several non-object labels
-(`violence`, `Stabbing`, `Blood`), and some that are simply junk (`al`). Those
-labels cannot reliably separate a pistol from a rifle -- a box tagged `Guns`
-could be either -- so they are collapsed to **firearm** and **knife**, which
-the annotations do support. Splitting further would be inventing precision the
-data does not have, and the split would fail on the first challenging example.
+Choosing the data
+-----------------
+The first weapon set tried here was a parquet export with 29 noisy labels. It
+did not survive inspection, and the inspection is worth recording because the
+failure was silent: training reached mAP@50 of 0.009 while the loss fell
+normally.
 
-Non-object and ambiguous labels are dropped rather than folded in.
+    36% of boxes fell outside the image under the only plausible reading
+    the knife class held 7 training instances against 276 in validation
+    drawing the converted labels back onto their images put the box beside
+        the weapon rather than on it
+
+Those are broken annotations, not hard examples, and no amount of training
+fixes them. The set in use now is a Roboflow COCO export: the coordinate
+convention is fixed by specification rather than inferred, the class list is
+already at the granularity this system wants, and every converted box is
+range-checked here rather than trusted.
+
+**Always draw converted labels back onto their images before training on
+them.** It takes a minute and it is the only check that catches this class of
+error.
 """
 
 from __future__ import annotations
@@ -34,25 +44,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-# Index -> name, in the order the dataset card lists them.
-WEAPON_NAMES = [
-    "weapons", "Aggressor", "Blood", "Guns", "Guns perspective", "Hand",
-    "Heavy Gun", "Knife", "Knife_Deploy", "Knife_Weapon", "Long guns",
-    "Person", "Pistol", "Rifle", "Shotgun", "Stabbing", "Victim", "al",
-    "guns", "handgun", "heavyweapon", "larga", "person", "pistol",
-    "pistols", "rifle", "shotgun", "violence", "weapon",
-]
-
-# Only labels that name a concrete object with an unambiguous type.
-WEAPON_MAP = {
-    3: 0, 4: 0, 6: 0, 10: 0, 12: 0, 13: 0, 14: 0,      # Guns, Heavy Gun, Long guns,
-    18: 0, 19: 0, 20: 0, 21: 0, 23: 0, 24: 0, 25: 0,   # Pistol, Rifle, Shotgun,
-    26: 0,                                              # handgun, larga, ...
-    7: 1, 8: 1, 9: 1,                                   # Knife, Knife_Deploy, Knife_Weapon
-}
-WEAPON_CLASSES = ["firearm", "knife"]
-DRONE_CLASSES = ["drone", "bird"]
-
+# Roboflow COCO export: unambiguous [x, y, w, h] top-left in absolute pixels,
+# with the class list already at the operational granularity we want.
+WEAPON_CLASSES = ["rifle", "pistol", "grenade", "knife"]
+# One class. Bird discrimination is done against the stock COCO
+# detector's class 14, not by a thin bird class trained here --
+# see prepare_drones() for why.
+DRONE_CLASSES = ["drone"]
 
 def _write_yaml(root: Path, classes: list[str]) -> Path:
     y = root / "data.yaml"
@@ -63,89 +61,183 @@ def _write_yaml(root: Path, classes: list[str]) -> Path:
     return y
 
 
-# ── weapons: parquet -> YOLO ──────────────────────────────────────────────
+# ── weapons: Roboflow COCO zips -> YOLO ───────────────────────────────────
 def prepare_weapons(src: Path, out: Path) -> Path:
-    import pyarrow.parquet as pq
+    """Convert the Roboflow COCO export to YOLO layout.
+
+    An earlier attempt used a parquet weapon set whose boxes did not survive
+    inspection: 36% fell outside the image under the only plausible reading,
+    the knife class had 7 training instances against 276 in validation, and
+    drawing the converted labels back onto their images put boxes beside the
+    weapon rather than on it. Training on that produced mAP@50 of 0.009 -- the
+    honest reading of which is that the labels were wrong, not the model.
+
+    A COCO export is unambiguous by specification, and every converted box is
+    range-checked here rather than trusted.
+    """
+    import json
 
     if (out / "data.yaml").exists():
         print(f"  = already prepared at {out}")
         return out / "data.yaml"
 
-    splits = {"train": "train-*.parquet", "val": "validation-*.parquet"}
-    kept = dropped = 0
-    for split, pattern in splits.items():
+    kept = skipped = 0
+    for split, archive in (("train", "train.zip"), ("val", "valid.zip")):
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
-        files = sorted(src.glob(f"data/{pattern}"))
-        if not files:
-            raise SystemExit(f"no parquet matching {pattern} under {src}")
 
-        n = 0
-        for f in files:
-            table = pq.read_table(f)
-            for row in table.to_pylist():
-                w, h = float(row["width"]), float(row["height"])
-                if w <= 0 or h <= 0:
+        with zipfile.ZipFile(src / "data" / archive) as zf:
+            names = zf.namelist()
+            ann_name = next((m for m in names if m.endswith("_annotations.coco.json")), None)
+            if ann_name is None:
+                raise SystemExit(f"no COCO annotations inside {archive}")
+            coco = json.loads(zf.read(ann_name))
+
+            # COCO category ids are 1-based and may include a supercategory at 0.
+            id_to_name = {c["id"]: c["name"].lower() for c in coco["categories"]}
+            name_to_idx = {n: i for i, n in enumerate(WEAPON_CLASSES)}
+            images = {im["id"]: im for im in coco["images"]}
+
+            per_image: dict[int, list[str]] = {}
+            for a in coco["annotations"]:
+                im = images.get(a["image_id"])
+                cls = name_to_idx.get(id_to_name.get(a["category_id"], ""))
+                if im is None or cls is None:
+                    skipped += 1
                     continue
-                lines = []
-                for box, cat in zip(row["objects"]["bbox"], row["objects"]["category"]):
-                    cls = WEAPON_MAP.get(int(cat))
-                    if cls is None:
-                        dropped += 1
-                        continue
-                    # COCO xywh (top-left) -> YOLO normalised centre form
-                    x, y, bw, bh = (float(v) for v in box)
-                    cx, cy = (x + bw / 2) / w, (y + bh / 2) / h
-                    nw, nh = bw / w, bh / h
-                    if not (0 < nw <= 1 and 0 < nh <= 1) or not (0 <= cx <= 1 and 0 <= cy <= 1):
-                        continue
-                    lines.append(f"{cls} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
-                    kept += 1
-                if not lines:
-                    continue                       # images with no kept object
+                W, H = float(im["width"]), float(im["height"])
+                x, y, bw, bh = (float(v) for v in a["bbox"])
+                # Range-check in pixel space before normalising: a box that
+                # leaves the image is a broken annotation, not a hard example.
+                if bw <= 0 or bh <= 0 or x < -1 or y < -1 or x + bw > W + 1 or y + bh > H + 1:
+                    skipped += 1
+                    continue
+                cx, cy = (x + bw / 2) / W, (y + bh / 2) / H
+                per_image.setdefault(a["image_id"], []).append(
+                    f"{cls} {cx:.6f} {cy:.6f} {bw / W:.6f} {bh / H:.6f}")
+                kept += 1
+
+            n = 0
+            for image_id, lines in per_image.items():
+                im = images[image_id]
+                member = next((m for m in names if m.endswith(im["file_name"])), None)
+                if member is None:
+                    continue
                 stem = f"{split}_{n:06d}"
-                (out / "images" / split / f"{stem}.jpg").write_bytes(row["image"]["bytes"])
+                (out / "images" / split / f"{stem}.jpg").write_bytes(zf.read(member))
                 (out / "labels" / split / f"{stem}.txt").write_text(
-                    "\n".join(lines), encoding="utf-8")
+                    chr(10).join(lines), encoding="utf-8")
                 n += 1
-        print(f"  {split}: {n} images")
-    print(f"  boxes kept {kept}, dropped {dropped} (ambiguous or non-object labels)")
+            print(f"  {split}: {n} images")
+
+    print(f"  boxes kept {kept}, skipped {skipped} (unmapped class or out of frame)")
     return _write_yaml(out, WEAPON_CLASSES)
 
 
-# ── drones: zipped YOLO archives -> merged YOLO tree ──────────────────────
+def _clean_yolo_label(raw: bytes) -> tuple[bytes, int]:
+    """Keep only well-formed 5-field detection lines, in range.
+
+    Real exports are not uniform: one file in 8,349 of the drone set carried an
+    87-field segmentation polygon instead of a box. Ultralytics would parse that
+    as a detection row and train on nonsense. Validate rather than trust --
+    this is the same lesson the weapon set taught, applied before it costs a
+    training run.
+    """
+    kept, dropped = [], 0
+    for line in raw.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if len(parts) != 5:
+            dropped += 1
+            continue
+        try:
+            cls = int(float(parts[0]))
+            cx, cy, w, h = (float(v) for v in parts[1:])
+        except ValueError:
+            dropped += 1
+            continue
+        if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0 and 0.0 < w <= 1.0 and 0.0 < h <= 1.0):
+            dropped += 1
+            continue
+        kept.append(f"{cls} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+    return (chr(10).join(kept)).encode("utf-8"), dropped
+
+
+# ── drones: Seraphim YOLO archives -> YOLO tree ────────────────────────────
 def prepare_drones(src: Path, out: Path) -> Path:
+    """Convert the Seraphim drone export to YOLO layout.
+
+    Why this set and not the synthetic one first tried here: that was 21 GB of
+    simulator renders shipped as RGBA instance masks, with no boxes. Boxes are
+    recoverable from masks, but the deeper problem is that a detector trained
+    only on renders is asked at demo time to find a real drone in real footage,
+    and nothing in its training distribution looks like that. Seraphim is real
+    imagery curated from 23 open datasets, already boxed in YOLO format.
+
+    **One class, deliberately.** The obvious second class is `bird` -- a drone
+    detector that fires on every bird is worthless above a border. But the
+    stock COCO detector already carries bird as class 14, trained on far more
+    bird imagery than any drone set contains. Adding a thin bird class here
+    (the mixed set available had 78 bird boxes) would produce a weaker bird
+    detector competing with a stronger one. So the discrimination is made
+    between models rather than inside one: this detector answers "is there a
+    drone", the perimeter model answers "is there a bird", and disagreement is
+    resolved on confidence. See `sentinel.perception.aerial`.
+    """
     if (out / "data.yaml").exists():
         print(f"  = already prepared at {out}")
         return out / "data.yaml"
 
-    zips = sorted(src.glob("*.zip"))
-    if not zips:
-        raise SystemExit(f"no zip archives under {src} -- is the download finished?")
+    img_zips = sorted(src.glob("**/images/*.zip"))
+    lbl_zips = sorted(src.glob("**/labels/*.zip"))
+    if not img_zips or not lbl_zips:
+        raise SystemExit(
+            f"expected images/*.zip and labels/*.zip under {src} -- "
+            "is the download finished?")
 
     for split in ("train", "val"):
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
 
-    n = 0
-    for z in zips:
-        # Splits that contain birds are the ones that teach the discriminator
-        # what a bird is; a drone-only archive teaches only "small thing in sky".
+    # Labels are small; hold them all in memory and index by stem so an image
+    # with no label file is dropped rather than silently trained as background.
+    labels: dict[str, bytes] = {}
+    malformed = 0
+    for z in lbl_zips:
         with zipfile.ZipFile(z) as zf:
-            members = zf.namelist()
-            imgs = [m for m in members if m.lower().endswith((".jpg", ".jpeg", ".png"))]
-            for m in imgs:
-                lbl = str(Path(m).with_suffix(".txt"))
-                if lbl not in members:
+            for m in zf.namelist():
+                if m.endswith(".txt"):
+                    clean, dropped = _clean_yolo_label(zf.read(m))
+                    malformed += dropped
+                    labels[Path(m).stem] = clean
+    print(f"  {len(labels)} label files across {len(lbl_zips)} archive(s), "
+          f"{malformed} malformed rows dropped")
+
+    n = unlabelled = empty = 0
+    for z in img_zips:
+        with zipfile.ZipFile(z) as zf:
+            for m in zf.namelist():
+                if not m.lower().endswith((".jpg", ".jpeg", ".png")):
                     continue
+                lbl = labels.get(Path(m).stem)
+                if lbl is None:
+                    unlabelled += 1
+                    continue
+                if not lbl.strip():
+                    empty += 1  # a real negative: keep it, it teaches restraint
+                # Deterministic split: every 8th image to val, so a re-run
+                # reproduces the same partition.
                 split = "val" if (n % 8 == 0) else "train"
-                stem = f"{z.stem}_{n:06d}"
+                stem = f"{n:06d}"
                 (out / "images" / split / f"{stem}.jpg").write_bytes(zf.read(m))
-                (out / "labels" / split / f"{stem}.txt").write_bytes(zf.read(lbl))
+                (out / "labels" / split / f"{stem}.txt").write_bytes(lbl)
                 n += 1
-    print(f"  {n} labelled images across {len(zips)} archives")
+
+    print(f"  {n} labelled images ({empty} intentional negatives), "
+          f"{unlabelled} images dropped for having no label")
     if n == 0:
-        raise SystemExit("no image/label pairs found -- check the archive layout")
+        raise SystemExit("no image/label pairs matched -- check the archive layout")
     return _write_yaml(out, DRONE_CLASSES)
 
 
@@ -160,7 +252,7 @@ def main() -> int:
     ap.add_argument("--prepare-only", action="store_true")
     args = ap.parse_args()
 
-    src = ROOT / "datasets" / args.task
+    src = ROOT / "datasets" / ("guns" if args.task == "weapons" else "drones_real")
     out = ROOT / "datasets" / f"{args.task}_yolo"
     if not src.exists():
         raise SystemExit(f"{src} not found -- run scripts/fetch_datasets.py first")

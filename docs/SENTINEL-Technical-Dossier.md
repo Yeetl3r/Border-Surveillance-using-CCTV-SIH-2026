@@ -600,7 +600,17 @@ Triggered, never continuous. All operate on region-of-interest crops, not full
 frames — a rifle at range occupies a handful of pixels in a full frame and is
 readily detectable on an upscaled person crop.
 
-- **Weapon detection** on person crops: rifle, pistol, edged weapon
+- **Weapon detection** on person crops: rifle, pistol, grenade, knife.
+  Cropped rather than full-frame because of scale, and graded by *carrier*
+  rather than by object — the threat matrix reads `WEAPON_VISIBLE` as `INFO` on
+  an enrolled friendly and `CRITICAL` on someone unidentified, because a guard
+  on patrol is armed.
+
+  > **Measured** on 905 held-out images containing 1,062 weapons: mAP@50
+  > **0.802**, mAP@50-95 0.559. At the configured 0.60 confidence the detector
+  > recalls 59.4% of real weapons and draws roughly two spurious boxes across
+  > 260 frames of weapon-free footage, none of which survive temporal
+  > confirmation into an alert.
 - **ANPR**: plate localisation on vehicle crops, then PP-OCRv6 recognition,
   tuned for Indian HSRP and two-line commercial formats
 - **Face detection and recognition**: YuNet detector, SFace embeddings
@@ -1140,7 +1150,59 @@ trajectories:
 This is exactly why `Track.history` retains trajectories rather than discarding
 them after the current frame — the architecture anticipates this analysis.
 
-### 13.4 Response
+### 13.4 The first-line discriminator: disagreement between models
+
+Motion analysis needs a track, and a track needs several frames. The
+discrimination that runs *first*, on the frame itself, is cheaper and comes
+from a different observation: the perimeter detector already carries `bird` as
+COCO class 14, trained on far more bird imagery than any drone dataset
+contains.
+
+The obvious alternative — train a `bird` class alongside `drone` — is worse
+than it appears. The mixed drone/bird sets available carry a few dozen bird
+boxes against thousands of drone boxes, which produces a weak bird detector
+competing with a strong one already present in the system.
+
+So the discrimination is made **between models**. The aerial detector proposes;
+the perimeter model disputes with an overlapping bird detection; the more
+confident wins. Withheld candidates are surfaced to the operator with the
+reasoning printed, because a system that can show why it declined makes a
+stronger claim than one that only shows hits.
+
+One implementation detail is load-bearing. A withheld candidate is **not**
+emitted as a zero-confidence observation. Temporal confirmation counts hits
+rather than confidence, so a flock of rejected birds would confirm into exactly
+the alert the rejection existed to prevent. Withheld candidates go to a
+display-only list that never reaches the confirmer.
+
+### 13.5 The frame-area ceiling
+
+Aerial training data is real imagery but it is not *surveillance* imagery: FPV
+footage and product photography dominate, and 44% of the boxes in the set used
+here cover more than 2.25% of the image. A model trained on that will, on a
+dark wide shot, propose a box covering half the frame.
+
+The fix is not a higher confidence threshold — that costs recall everywhere to
+solve a problem that only occurs at one end of the size distribution. Instead
+a candidate covering more than a configured fraction of the frame is withheld,
+on the grounds that a drone filling a third of a surveillance frame is metres
+from the lens rather than crossing a border.
+
+> **Measured** against 1,078 held-out drones and 442 frames of drone-free
+> footage:
+>
+> | conf | max area | recall | frames with a false drone |
+> |---|---|---|---|
+> | 0.35 | 35% | 74.8% | 10.0% |
+> | 0.50 | none | 71.3% | 0.9% |
+> | **0.50** | **35%** | **68.9%** | **0.2%** |
+> | 0.60 | none | 62.6% | 0.0% |
+>
+> The ceiling buys six points of recall over simply raising the threshold, and
+> it does so by encoding a fact about the deployment rather than by tuning a
+> number.
+
+### 13.6 Response
 
 Aerial detections raise their own observation kind, feed the same temporal
 confirmation, and enter the same threat matrix. A confirmed hovering

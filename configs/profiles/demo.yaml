@@ -25,3 +25,25 @@ identity:
 
 runtime:
   target_fps: 25.0
+
+# --- the four demo paths -------------------------------------------------
+# Each of these is off in system.yaml and on here, because each costs
+# something at runtime and each is a claim the system should not make by
+# default. Turning them on is a demo decision, stated in one place.
+
+pose:
+  # Demo 4 (animal versus crawling human) runs through PoseEstimator.
+  # disambiguate(), which needs the model loaded. Note that enabling pose also
+  # enables the STANCE_ANOMALY path -- that is the documented high-false-alarm
+  # signal, and on a demo clip it is worth the risk; in the field it is not.
+  enabled: true
+
+threat:
+  weapons:
+    # Demo 2. Needs weights/weapons_yolo26n.pt -- startup fails loudly if it is
+    # missing rather than running a demo where nothing ever fires.
+    enabled: true
+  aerial:
+    # Demo 3. Needs weights/drones_yolo26n.pt.
+    enabled: true
+    every_n_frames: 1     # a drone crosses frame quickly; do not skip frames
