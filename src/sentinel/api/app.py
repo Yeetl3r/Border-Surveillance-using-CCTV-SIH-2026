@@ -521,7 +521,7 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
         """The scripted demos, as configured. Read from configs/demos.yaml."""
         return {"demos": [
             {"id": d.id, "title": d.title, "claim": d.claim, "note": d.note.strip(),
-             "extras": list(d.extras),
+             "extras": list(d.extras), "alert_labels": dict(d.alert_labels),
              "panels": [{"camera": p.camera, "label": p.label,
                          "source": p.source, "live": p.source.startswith("device:"),
                          "present": dict(p.present)}
@@ -598,7 +598,8 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
 
         return {"ok": True, "demo": demo_id, "title": demo.title,
                 "claim": demo.claim, "note": demo.note.strip(),
-                "extras": list(demo.extras), "panels": panels}
+                "extras": list(demo.extras),
+                "alert_labels": dict(demo.alert_labels), "panels": panels}
 
     # -- evidence ------------------------------------------------------------
     @app.get("/evidence/{path:path}")

@@ -85,6 +85,14 @@ class CameraPipeline:
         self._det_conf = cam.detector_overrides.get("conf")
         #: Detectors this camera does not run. Set by the demo runner.
         self.suppress: frozenset[str] = frozenset()
+        #: This camera's own aerial results. ThreatDetectors holds ONE aerial
+        #: detector shared by every pipeline, so reading its lists at overlay
+        #: time returns whatever camera scanned most recently -- with two
+        #: cameras live, a bird clip was drawing the drone clip's reticle at
+        #: the drone's coordinates, in a patch of empty sky. Snapshotted here
+        #: immediately after this camera's own scan instead.
+        self._aerial_boxes: list[dict] = []
+        self._aerial_withheld: list[dict] = []
         self.zones = ZoneSet.from_camera(cam)
         self.tracker = ObjectTracker(cfg.tracker, cam.camera_id,
                                      self.detector.mapper, self.detector.class_names)
@@ -199,7 +207,20 @@ class CameraPipeline:
             spatial_obs += self.threat.scan(
                 tracks, dets, bundle.raw, bundle.camera_id,
                 bundle.frame_idx, bundle.captured_at, self.suppress)
-        self.identity.resolve(tracks, bundle.raw, bundle.frame_idx)
+            if "aerial" in self.suppress:
+                self._aerial_boxes, self._aerial_withheld = [], []
+            elif self.threat.aerial is not None and (
+                    bundle.frame_idx % max(1, self.threat.aerial.cfg.every_n_frames) == 0):
+                # Only overwrite on a frame this camera actually scanned; the
+                # detector skips frames, and clearing on a skipped one makes
+                # the reticle blink at half the frame rate.
+                self._aerial_boxes = list(self.threat.aerial_boxes)
+                self._aerial_withheld = list(self.threat.withheld)
+        if "identity" not in self.suppress:
+            # A demo about the camera's own health does not want an identity
+            # verdict on every frame of a hand filling the lens; 261 WATCH rows
+            # bury the one WARNING that is the point of the screen.
+            self.identity.resolve(tracks, bundle.raw, bundle.frame_idx)
 
         # -- Tier 3 ----------------------------------------------------------
         observations, confirmed = self.temporal.process(bundle, tracks, spatial_obs)
@@ -279,8 +300,8 @@ class CameraPipeline:
             # not tracked. `withheld` carries the candidates the perimeter
             # model disputed as birds, so the panel can show restraint
             # rather than simply showing nothing.
-            "aerial": {"drones": self.threat.aerial_boxes if self.threat else [],
-                       "withheld": self.threat.withheld if self.threat else []},
+            "aerial": {"drones": self._aerial_boxes,
+                       "withheld": self._aerial_withheld},
             "perf": self.perf.as_dict(),
             "metric": self.zones.metric,
         }

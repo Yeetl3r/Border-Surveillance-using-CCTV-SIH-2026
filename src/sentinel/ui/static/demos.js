@@ -37,8 +37,13 @@ const S = {
   overlays: {},        // camera_id -> latest overlay
   alerts: [],
   switching: false,
+  //: When the current demo started. The alert log is shared, and demo_a is
+  //: reused by several demos, so its history mixes -- without this a tamper
+  //: screen lists weapon alerts from the clip two demos ago.
+  startedAt: 0,
   wantEvidence: false,
   selected: null,
+  alertLabels: {},
 };
 
 /* ══════════════ rail ══════════════ */
@@ -107,12 +112,22 @@ async function select(id) {
 
   S.active = id;
   S.overlays = {};
+  S.startedAt = Date.now();
+  S.alerts = [];
   renderRail();
   $("#demo-title").textContent = `Demo ${id} — ${res.title}`;
   $("#demo-note").textContent = res.note || "";
   $("#demo-claim").textContent = res.claim || res.title;
-  buildPanels(res.panels);
-  applyExtras(res.extras || []);
+  // Guarded: a fault while rendering must not leave `switching` latched, or
+  // the rail refuses every later demo and the only way out is a page reload.
+  try {
+    S.alertLabels = res.alert_labels || {};
+    buildPanels(res.panels);
+    applyExtras(res.extras || []);
+    paintAlerts();
+  } catch (err) {
+    console.error("demo render failed", err);
+  }
 
   // Give the retargeted pipelines a moment to produce a first frame, so the
   // overlay lifts onto a picture rather than onto black.
@@ -330,11 +345,13 @@ function applyExtras(extras) {
   $("#pane-ask").hidden = !want.has("ask");
   $("#pane-evidence").hidden = !want.has("evidence");
   S.wantEvidence = want.has("evidence");
-  if (!want.has("evidence")) {
-    S.selected = null;
-    $("#evidence-body").textContent = "";
-    $("#evidence-body").append(el("p", "muted", "Select an alert above to see its evidence."));
-  }
+  // Always cleared, not only when evidence is switched off: carrying the last
+  // demo's selection into this one would leave the panel showing a record from
+  // footage that is no longer on screen, and would stop auto-select running.
+  S.selected = null;
+  $("#evidence-body").textContent = "";
+  $("#evidence-body").append(
+    el("p", "muted", "Waiting for the first confirmed alert."));
 }
 
 async function ask(text) {
@@ -412,7 +429,8 @@ async function selectAlert(id) {
   }
   body.textContent = "";
 
-  const h = el("h3", null, (d.kind || "").replace(/_/g, " ").toLowerCase()
+  const named = S.alertLabels[d.kind];
+  const h = el("h3", null, named || (d.kind || "").replace(/_/g, " ").toLowerCase()
     .replace(/^./, (m) => m.toUpperCase()));
   h.style.color = col(d.threat);
   body.append(h);
@@ -437,10 +455,17 @@ async function selectAlert(id) {
     sh.append(b);
     shots.append(sh);
   };
-  add("KEYFRAME · UNANNOTATED, AS THE DETECTOR SAW IT", d.keyframe_path, "alert keyframe");
-  add("SUBJECT CROP", d.crop_path, "subject crop");
+  // A camera-health fault is about the camera, not about anyone in front of
+  // it, so it has no subject to crop. Saying that is more useful than a blank
+  // plate reading "not written".
+  const noSubject = d.kind === "HEALTH_FAULT"
+    ? "camera fault — no subject" : "no subject for this alert";
+  add("KEYFRAME · UNANNOTATED, AS THE DETECTOR SAW IT", d.keyframe_path,
+      "alert keyframe", "no frame retained");
+  add("SUBJECT CROP", d.crop_path, "subject crop", noSubject);
   // Only meaningful for a person, and only when a face was actually visible.
-  add("IDENTIFIED PERSON · FACE", d.face_path, "face of the subject");
+  add("IDENTIFIED PERSON · FACE", d.face_path, "face of the subject",
+      d.kind === "HEALTH_FAULT" ? noSubject : "no face visible in this frame");
   body.append(shots);
 }
 
@@ -448,13 +473,21 @@ async function selectAlert(id) {
 function paintAlerts() {
   const list = $("#alerts");
   list.textContent = "";
-  const rows = S.alerts.slice(0, 12);
+  if (!Array.isArray(S.alerts)) S.alerts = [];
+  // Severity first, then recency. A camera-health fault is the point of the
+  // tamper screen, and it raises once; the identity verdicts around it raise
+  // on every crop and would otherwise push it off the list entirely.
+  const RANK = { CRITICAL: 4, WARNING: 3, WATCH: 2, INFO: 1, FRIENDLY: 0 };
+  const rows = S.alerts.slice().sort((a, b) => {
+    const d = (RANK[b.threat] || 0) - (RANK[a.threat] || 0);
+    return d !== 0 ? d : Date.parse(b.opened_at) - Date.parse(a.opened_at);
+  }).slice(0, 12);
   $("#alert-count").textContent = rows.length ? `${S.alerts.length} confirmed` : "none yet";
   rows.forEach((a) => {
     const li = el("li");
     li.style.borderLeft = `2px solid ${col(a.threat)}`;
     li.append(el("span", "at", hhmmss(a.opened_at)));
-    li.append(el("span", "kind", a.kind));
+    li.append(el("span", "kind", S.alertLabels[a.kind] || a.kind));
     li.append(el("span", "why", a.reason || a.camera_id || ""));
     if (S.wantEvidence) {
       li.style.cursor = "pointer";
@@ -462,6 +495,24 @@ function paintAlerts() {
     }
     list.append(li);
   });
+}
+
+// Put an evidence record on screen without waiting for a click nobody knows to
+// make. Prefers the newest alert that actually carries a face, so the panel
+// shows the full record rather than two tiles and an explanation.
+async function autoSelectEvidence() {
+  // Not before the panels exist: at boot loadAlerts() runs first, and with no
+  // panels to scope by it would pick an alert from whichever demo ran last.
+  if (!S.panels.length) return;
+  if (!S.wantEvidence || S.selected || !Array.isArray(S.alerts) || !S.alerts.length) return;
+  const candidates = S.alerts.slice(0, 6);
+  for (const a of candidates) {
+    try {
+      const d = await (await fetch(`/api/alerts/${a.alert_id}`)).json();
+      if (d && d.face_path) { selectAlert(a.alert_id); return; }
+    } catch (_) { /* try the next */ }
+  }
+  selectAlert(candidates[0].alert_id);
 }
 
 function paintThreat(level) {
@@ -485,7 +536,14 @@ function connect() {
       if (m.cameras) Object.assign(S.overlays, m.cameras);
       if (m.status) {
         paintThreat(m.status.threat);
-        if (m.status.alerts) { S.alerts = m.status.alerts; paintAlerts(); }
+        if (Array.isArray(m.status.alerts) && m.status.alerts.length) {
+          const mine = new Set(S.panels.map((p) => p.camera));
+          const rows = mine.size
+            ? m.status.alerts.filter((a) => mine.has(a.camera_id)
+                                            && Date.parse(a.opened_at) >= S.startedAt - 2000)
+            : [];
+          if (rows.length) { S.alerts = rows; paintAlerts(); autoSelectEvidence(); }
+        }
       }
       drawAll();
     } else if (m.type === "alert" && m.phase === "opened") {
@@ -499,8 +557,24 @@ function connect() {
 async function loadAlerts() {
   try {
     const r = await (await fetch("/api/alerts?limit=20")).json();
-    S.alerts = r.alerts || r || [];
+    // The endpoint returns {live, recent}, not {alerts}. Reading a key that is
+    // not there put the whole response object into S.alerts, and the next
+    // paint threw on .slice -- which happened inside select(), so the demo
+    // never cleared its "binding the feed" overlay and every later switch was
+    // refused by the re-entry guard. One wrong key name, and the rail stopped
+    // working.
+    const all = (r.live && r.live.length ? r.live : r.recent) || [];
+    // Only this demo's own cameras. The log is shared across demos, and a
+    // tamper screen listing a tripwire cross from the clip two demos ago is
+    // worse than an empty list -- it invites the obvious question and has a
+    // confusing answer.
+    const mine = new Set(S.panels.map((p) => p.camera));
+    S.alerts = mine.size
+      ? all.filter((a) => mine.has(a.camera_id)
+                          && Date.parse(a.opened_at) >= S.startedAt - 2000)
+      : [];
     paintAlerts();
+    autoSelectEvidence();
   } catch (_) { /* transient */ }
 }
 
@@ -522,6 +596,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     (b.onclick = () => { $("#ask-input").value = b.textContent; ask(b.textContent); }));
   connect();
   loadAlerts();
+  // The WebSocket carries LIVE alerts, which expire after clear_after_s. An
+  // audience wants to see that an alert was raised, not only that one is
+  // raised right now, so the list is refreshed from the log rather than left
+  // to empty itself.
+  setInterval(loadAlerts, 3000);
 
   // Deep link: /demos#3 opens demo 3 directly, which is how you get back to
   // one mid-presentation without clicking through the others.

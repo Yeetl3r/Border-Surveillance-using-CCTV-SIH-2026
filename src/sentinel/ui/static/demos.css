@@ -133,3 +133,28 @@
 @media (max-width: 1000px) {
   #pane-evidence .shots { grid-template-columns: 1fr; }
 }
+
+/* ── alert list ────────────────────────────────────────────────────────── */
+/* The list had no rules of its own, so it rendered as a bare <ul> and the
+   time, kind and camera ran together into one unreadable string. */
+.alerts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.alerts li {
+  display: flex; align-items: baseline; gap: 14px;
+  padding: 9px 12px; border-radius: 9px;
+  background: var(--card-2); border: 1px solid var(--line-soft);
+  font-family: var(--mono); font-size: 11.5px;
+  transition: background .15s ease, border-color .15s ease;
+}
+.alerts li .at { color: var(--ink-3); flex: 0 0 auto; letter-spacing: .06em; }
+.alerts li .kind { font-weight: 600; letter-spacing: .1em; flex: 0 0 auto; }
+.alerts li .why {
+  color: var(--ink-2); flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: Archivo, Helvetica, Arial, sans-serif; font-size: 12.5px;
+}
+.alerts li:hover { border-color: rgba(157,196,240,.28); }
+
+/* A tile with nothing in it says why. "not written" reads as a broken feature;
+   "no face visible in this frame" reads as the system declining to invent one. */
+#pane-evidence .box.empty::after,
+#pane-evidence .box.empty[data-why]::after { content: attr(data-why); }

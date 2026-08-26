@@ -599,6 +599,9 @@ class DemoCfg(BaseModel):
     #: language query box, "evidence" for the keyframe / subject / face tiles.
     #: Most demos isolate one detector and want neither.
     extras: list[str] = Field(default_factory=list)
+    #: How this demo names the alert kinds it raises. HEALTH_FAULT is accurate
+    #: and tells an audience nothing; on the tamper demo it is the headline.
+    alert_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class SystemCfg(BaseModel):

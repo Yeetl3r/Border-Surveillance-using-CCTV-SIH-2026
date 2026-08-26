@@ -85,15 +85,20 @@ demos:
       by more than a covered lens differs from an open one -- so the system
       learns this camera's own baseline and looks for a relative collapse, and
       requires sharpness and structure to fall together.
+    extras: [evidence]
+    alert_labels:
+      # HEALTH_FAULT is accurate and tells an audience nothing. On this demo it
+      # is the headline, so it says what actually happened.
+      HEALTH_FAULT: VIDEO TAMPERED
     panels:
       - camera: demo_a
         label: LENS OBSTRUCTION
         source: assets/demo/tamper_lens.mp4
-        # A lens filled by a hand is not a scene about which any object claim
-        # should be made. Health is the whole subject here.
+        # A lens filled by a hand is not a scene about which a weapon claim
+        # should be made. Health is the subject here -- but the person doing
+        # the covering is still tracked and identified, which is what puts a
+        # face on the evidence record.
         suppress: [weapons, aerial]
-        present:
-          hide_boxes: true
 
   - id: 4
     title: Animal versus crawling human
