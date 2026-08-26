@@ -73,7 +73,8 @@ class Detector(Protocol):
     #: config, and a hardcoded four-class assumption would have to be unpicked.
     class_names: dict[int, str]
 
-    def detect(self, frame: np.ndarray) -> tuple[DetBatch, list[Detection]]: ...
+    def detect(self, frame: np.ndarray, conf: float | None = None,
+               ) -> tuple[DetBatch, list[Detection]]: ...
     def warmup(self) -> None: ...
 
 

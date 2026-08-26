@@ -25,7 +25,7 @@ import numpy as np
 
 from ..alerting import AlertManager, ClipBuffer, EvidenceWriter, RelayEncoder
 from ..calibration.zones import ZoneSet
-from ..config import CameraCfg, SystemCfg
+from ..config import CameraCfg, SystemCfg, resolve
 from ..contracts import FrameBundle, ObjectGroup, ThreatLevel, Track
 from ..identity import FriendlyGallery, IdentityResolver, build_embedder
 from ..ingest import build_source
@@ -77,6 +77,12 @@ class CameraPipeline:
         self.detector: YoloDetector = shared["detector"]
         self.pose = shared.get("pose")
         self.threat = shared.get("threat")
+        # Per-camera detector sensitivity. `detector_overrides` was declared in
+        # the camera schema from the start and never read; this is where it
+        # becomes real. Only `conf` is honoured -- imgsz and the class map are
+        # properties of the shared model, and varying them per camera would
+        # mean a second set of weights.
+        self._det_conf = cam.detector_overrides.get("conf")
         self.zones = ZoneSet.from_camera(cam)
         self.tracker = ObjectTracker(cfg.tracker, cam.camera_id,
                                      self.detector.mapper, self.detector.class_names)
@@ -102,6 +108,17 @@ class CameraPipeline:
         self.frames_processed = 0
 
     # -- lifecycle -----------------------------------------------------------
+    @property
+    def running(self) -> bool:
+        """Whether this pipeline's threads are alive.
+
+        Asked before stopping a camera the demo runner is about to reuse:
+        calling stop() on an already-stopped pipeline closes an already-closed
+        queue, and the 0.4 s unwind pause that follows is 0.4 s of a
+        presentation spent waiting for nothing.
+        """
+        return any(t.is_alive() for t in self._threads)
+
     def start(self) -> None:
         self._threads = [
             threading.Thread(target=self._ingest_loop, name=f"ingest:{self.camera_id}",
@@ -155,7 +172,7 @@ class CameraPipeline:
         # -- Tier 1 ----------------------------------------------------------
         t0 = time.perf_counter()
         # The detector sees raw. Never the enhanced operator view.
-        batch, dets = self.detector.detect(bundle.raw)
+        batch, dets = self.detector.detect(bundle.raw, self._det_conf)
         self.perf.detect.append(time.perf_counter() - t0)
 
         t0 = time.perf_counter()
@@ -310,9 +327,11 @@ class SentinelSystem:
         self.cfg = cfg
         self.on_event = on_event
         self.registry = QueueRegistry()
-        self.repo = Repository(cfg.root_dir + "/" + cfg.storage.db_path
-                               if not cfg.storage.db_path.startswith(("/", "\\"))
-                               else cfg.storage.db_path)
+        # `resolve` rather than a prefix test on "/" and "\\": those miss a
+        # Windows drive letter, so an absolute path like C:\tmp\x.db was being
+        # appended to the project root and produced a directory name no
+        # filesystem would accept.
+        self.repo = Repository(resolve(cfg, cfg.storage.db_path))
 
         # F15: refuse network access at runtime. Set before any model loads.
         if cfg.runtime.offline:
@@ -373,7 +392,8 @@ class SentinelSystem:
 
     def start(self) -> None:
         for p in self.pipelines.values():
-            p.start()
+            if p.cam.autostart:
+                p.start()
 
     def stop(self) -> None:
         for p in self.pipelines.values():

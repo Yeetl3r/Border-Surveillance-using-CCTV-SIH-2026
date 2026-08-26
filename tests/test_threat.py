@@ -66,12 +66,25 @@ def test_bird_elsewhere_in_frame_does_not_withhold(cfg):
     assert iou == 0.0
 
 
-def test_more_confident_drone_beats_a_weaker_bird(cfg):
-    """The point of the rule is that the more confident model wins, not that
-    any bird at all vetoes a drone."""
+def test_a_confident_drone_beats_a_much_weaker_bird(cfg):
+    """The rule is a weighted contest, not a blanket veto: a bird detection
+    far weaker than the drone claim does not overturn it.
+
+    The default margin is 0.5, so the bird must reach half the drone's
+    confidence. 0.90 x 0.5 = 0.45, and 0.20 is well below that."""
     withhold, _rival, _iou = resolve_bird((0, 0, 10, 10), 0.90,
-                                          [bird((0, 0, 10, 10), conf=0.40)], cfg)
+                                          [bird((0, 0, 10, 10), conf=0.20)], cfg)
     assert withhold is False
+
+
+def test_the_default_margin_lets_a_less_confident_bird_win(cfg):
+    """Measured on real footage, the drone model is the over-confident one --
+    median 0.801 against the stock bird detector's 0.677 on the same birds. A
+    rule that demanded the bird win outright withheld only 14% of the
+    candidates raised on bird-only footage; at 0.5 it withholds 70%."""
+    withhold, _rival, _iou = resolve_bird((0, 0, 10, 10), 0.80,
+                                          [bird((0, 0, 10, 10), conf=0.68)], cfg)
+    assert withhold is True
 
 
 def test_margin_can_be_tuned_to_favour_the_drone(cfg):

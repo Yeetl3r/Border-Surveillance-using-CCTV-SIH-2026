@@ -6,15 +6,15 @@
  * needs (scrollbar, focus ring, reduced motion).
  */
 
-html { scroll-behavior: smooth; background: #000; }
-  body { margin: 0; background: #000; color: #f2eceb; font-family: Archivo, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+html { scroll-behavior: smooth; background: #04070d; }
+  body { margin: 0; background: #04070d; color: #e8eef7; font-family: Archivo, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
   * { box-sizing: border-box; }
-  a { color: #ff5566; text-decoration: none; }
-  a:hover { color: #ff8f9a; }
-  ::selection { background: #ff1f3c; color: #fff; }
+  a { color: #9dc4f0; text-decoration: none; }
+  a:hover { color: #cfe4ff; }
+  ::selection { background: #6aa8f5; color: #fff; }
   @keyframes scan { 0%, 100% { transform: translateY(-140%); opacity: 0; } 12%, 88% { transform: translateY(0); opacity: 1; } 50% { transform: translateY(140%); opacity: 0; } }
   @keyframes blink { 0%, 92%, 100% { transform: scaleY(0); } 95%, 96.5% { transform: scaleY(1); } }
-  @keyframes pulseGlow { 0%, 100% { box-shadow: inset 0 0 70px rgba(0,0,0,.95), 0 0 90px rgba(255,31,60,.38); } 50% { box-shadow: inset 0 0 80px rgba(0,0,0,.98), 0 0 150px rgba(255,31,60,.62); } }
+  @keyframes pulseGlow { 0%, 100% { box-shadow: inset 0 0 70px rgba(0,0,0,.95), 0 0 90px rgba(106,168,245,.38); } 50% { box-shadow: inset 0 0 80px rgba(0,0,0,.98), 0 0 150px rgba(106,168,245,.62); } }
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes spinRev { to { transform: rotate(-360deg); } }
   @keyframes breathe { 0%, 100% { opacity: .5; transform: scale(1); } 50% { opacity: .95; transform: scale(1.06); } }
@@ -32,14 +32,14 @@ html { scroll-behavior: smooth; background: #000; }
    stays byte-identical to what the detector actually received. */
 canvas[data-ref="overlay"] { image-rendering: auto; }
 
-[data-ref="stream"] { background: #0a0708; }
+[data-ref="stream"] { background: #080c14; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: #050203; }
-::-webkit-scrollbar-thumb { background: rgba(255,31,60,.28); border-radius: 6px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,31,60,.5); }
+::-webkit-scrollbar-track { background: #04070d; }
+::-webkit-scrollbar-thumb { background: rgba(106,168,245,.28); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(106,168,245,.5); }
 
-:focus-visible { outline: 2px solid #ff5566; outline-offset: 3px; }
+:focus-visible { outline: 2px solid #9dc4f0; outline-offset: 3px; }
 
 [hidden] { display: none !important; }
 

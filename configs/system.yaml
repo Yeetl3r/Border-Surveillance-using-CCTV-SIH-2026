@@ -139,16 +139,24 @@ threat:                   # specialised detectors -- see perception/threat.py
     model: drones_yolo26n.pt
     imgsz: 960            # drones are small; do not downscale them away
     # MEASURED against 1,078 held-out drones and 442 frames of drone-free demo
-    # footage. The size cap is doing real work here, not just the threshold:
-    #   conf  max_area   recall   frames with a false drone
-    #   0.35     35%     74.8%      10.0%
-    #   0.50     none    71.3%       0.9%
-    #   0.50     35%     68.9%       0.2%   <- configured
-    #   0.60     none    62.6%       0.0%
-    # The cap buys 6 points of recall over simply raising the threshold, and
-    # it does so by encoding something true about the deployment rather than
-    # by tuning a number.
-    conf: 0.50
+    # footage, using the SHIPPED weights (60 epochs, mAP@50 0.9552). All rows
+    # below already have the 35% frame-area ceiling applied:
+    #   conf   recall   frames with a false drone
+    #   0.60   72.8%      11.3%
+    #   0.70   66.5%       6.3%
+    #   0.75   62.2%       0.0%   <- configured
+    #   0.80   54.9%       0.0%
+    #   0.85   41.2%       0.0%
+    # The highest false confidence anywhere in that footage is 0.730, so 0.75
+    # sits just above it -- and 0.80 buys nothing while costing seven points.
+    #
+    # WORTH KNOWING: an earlier checkpoint at epoch 30 (mAP@50 0.933) needed
+    # only 0.50 for the same silence. Training the extra 30 epochs raised mAP
+    # on the drone validation set and made the model MORE confident on night IR
+    # driveway footage containing no drones at all. Higher mAP is not the same
+    # thing as a better detector for this deployment, and the threshold, not
+    # the metric, is what absorbed the difference.
+    conf: 0.75
     max_area_frac: 0.35
     every_n_frames: 2
     # Bird rejection is done BETWEEN models: this detector proposes, the stock
@@ -156,8 +164,40 @@ threat:                   # specialised detectors -- see perception/threat.py
     # candidate is shown but never confirmed -- counting withheld birds as hits
     # would produce the alert the rejection exists to prevent.
     bird_class_id: 14
-    bird_iou: 0.45
-    bird_margin: 1.0
+    # MEASURED on assets/demo/bird_flight.mp4 -- 107 drone candidates raised on
+    # footage containing only birds. Both of these started at the obvious
+    # values and both were wrong:
+    #
+    #   bird_iou 0.45 rejected most true matches. A drone-trained model and a
+    #   bird-trained model box the same bird differently; the median best-bird
+    #   IoU is 0.391, and only 37% of candidates clear 0.45. The withheld rate
+    #   plateaus at 0.30, because below that there is nothing left to catch --
+    #   79% of candidates have ANY overlapping bird, and that is the ceiling.
+    #
+    #   bird_margin 1.0 demanded the bird beat the drone outright, but the
+    #   drone model is systematically the more confident of the two on this
+    #   footage (median 0.801 against the bird's 0.677). That is a statement
+    #   about which model is over-confident, not about which is right: the
+    #   stock detector has seen orders of magnitude more birds. At 0.5 the bird
+    #   needs only half the drone's confidence to win.
+    #
+    #   withheld share of bird-clip candidates:
+    #     iou 0.45 / margin 1.0   14.0%   (the original pair)
+    #     iou 0.30 / margin 1.0   33.6%
+    #     iou 0.30 / margin 0.5   70.1%
+    #     iou 0.30 / margin 0.25  ~76%    <- configured
+    #
+    # This costs nothing on real drone footage: the stock detector finds no
+    # birds there at all, and a rule keyed on birds cannot fire without one.
+    bird_iou: 0.30
+    # 0.25 rather than 0.5 because the veto alone is not enough -- see the
+    # AERIAL_INTRUSION confirmation rule, which is the other half of this.
+    # END TO END, alerts raised on 440 frames of bird-only footage:
+    #   margin 0.50, confirm 3 hits / 0.5 / 2.5 s   ->  1 alert on birds
+    #   margin 0.25, confirm 3 hits / 0.5 / 2.5 s   ->  1 alert on birds
+    #   margin 0.25, confirm 8 hits / 0.75 / 3.0 s  ->  0 alerts on birds
+    # and the drone clip still raises its alert in all three.
+    bird_margin: 0.25
 
 # ---------------------------------------------------------------------------
 # Tier 0 -- health and operator stream
@@ -196,8 +236,14 @@ confirm:                  # F7 -- in seconds and a hit ratio, NOT frame count
     # also the thing you least want to be slow about, so this is the shortest
     # window that still requires corroboration.
     WEAPON_VISIBLE: {window_s: 1.5, min_ratio: 0.5, min_hits: 2}
-    # The aerial detector runs every 2nd frame, so 3 hits spans ~6 frames.
-    AERIAL_INTRUSION: {window_s: 2.5, min_ratio: 0.5, min_hits: 3}
+    # Eight hits at a 0.75 ratio, not the usual three at 0.5. This is the
+    # second half of bird rejection and it is doing real work: the drone model
+    # cannot separate a bird from a drone by itself -- MEASURED, it fires on
+    # 28% of frames of bird-only footage against 36% of drone footage -- so
+    # what separates them is that a drone crossing frame is detected in most
+    # consecutive frames while bird misfires are scattered. Dropping to three
+    # hits at 0.5 puts a confirmed AERIAL_INTRUSION on a flock of birds.
+    AERIAL_INTRUSION: {window_s: 3.0, min_ratio: 0.75, min_hits: 8}
 
 baggage:                  # F6 -- distances in metres via homography
   enabled: true

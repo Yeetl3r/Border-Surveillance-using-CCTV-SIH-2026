@@ -122,6 +122,18 @@ class PoseEstimator:
         ]
         candidates.sort(key=lambda t: -(t.latest.height_px))
 
+        # `meta` persists for the life of a track, so last frame's verdict has
+        # to be cleared before this frame's is written. Without this, a subject
+        # that looked low-slung for a single frame keeps `quadruped_note`
+        # forever -- and since annotate() now skips anything carrying that key,
+        # the track would never be given a stance again. A track that stops
+        # being a candidate at all (it stood up, so its aspect ratio dropped)
+        # is cleared here too, which is why every candidate is cleared rather
+        # than only the ones about to be examined.
+        for t in tracks:
+            t.meta.pop("quadruped_note", None)
+            t.meta.pop("reclassified", None)
+
         for t in candidates[: self.cfg.max_crops_per_frame]:
             x1, y1, x2, y2 = (int(max(0, v)) for v in t.latest.bbox_px)
             crop = frame[y1:min(h, y2), x1:min(w, x2)]
@@ -151,7 +163,14 @@ class PoseEstimator:
         if not self.cfg.enabled:
             return
 
-        people = [t for t in tracks if t.group == ObjectGroup.PERSON]
+        # Skip anything disambiguate() already adjudicated this frame. It runs
+        # first and may have WITHHELD the stance claim on a low-slung subject
+        # with no resolvable human skeleton; recomputing stance here would
+        # overwrite that decision with a confident STANDING, so the track would
+        # carry both the note explaining the refusal and the claim it refused
+        # to make.
+        people = [t for t in tracks
+                  if t.group == ObjectGroup.PERSON and "quadruped_note" not in t.meta]
         # Prefer larger subjects: a 40 px crop cannot support a stance claim,
         # and the per-frame crop budget is finite.
         people.sort(key=lambda t: -(t.latest.height_px))

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SENTINEL // Demonstrations</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/analysis.css">
+    <link rel="stylesheet" href="/static/demos.css">
+  </head>
+  <body class="analysis demos">
+
+    <!-- ════════════ switching ════════════ -->
+    <!-- Shown while a demo's cameras are being retargeted. Retargeting stops a
+         pipeline, waits for its threads to unwind and starts it on a new clip,
+         which takes about a second; without this the panels sit black and the
+         page looks broken at exactly the moment an audience is watching. -->
+    <div id="switch" class="switching" hidden>
+      <div class="switching-inner">
+        <div class="loader-mark"><span></span></div>
+        <h2 id="switch-title">Loading</h2>
+        <p id="switch-sub">binding the feed</p>
+      </div>
+    </div>
+
+    <main id="app">
+
+      <header class="bar">
+        <a class="brand" href="/">
+          <span class="dot"></span>
+          <span>SENTINEL</span>
+        </a>
+        <div class="src" id="demo-claim">select a demonstration</div>
+        <div class="spacer"></div>
+        <div class="threat" id="threat-wrap">
+          <span class="threat-cap">SECTOR THREAT</span>
+          <span class="threat-pill" id="threat-pill"><i></i><b id="threat-val">—</b></span>
+        </div>
+        <a class="ghost" href="/analysis">FREE-RUN ANALYSIS</a>
+      </header>
+
+      <!-- the five demonstrations, in order -->
+      <nav class="rail" id="rail"></nav>
+
+      <section class="stage">
+        <div class="stage-head">
+          <h1 id="demo-title">Demonstrations</h1>
+          <p id="demo-note">
+            Five scripted runs, each isolating one thing the system does. Pick
+            one to bind its footage and start the pipeline on it.
+          </p>
+        </div>
+
+        <!-- One block per panel: raw on the left, detection on the right.
+             Two-panel demos stack, first listed on top. -->
+        <div id="panels" class="panels"></div>
+      </section>
+
+      <section class="beneath">
+        <div class="alerts-head">
+          <span class="tag">CONFIRMED ALERTS</span>
+          <span class="sub" id="alert-count">none yet</span>
+        </div>
+        <ul id="alerts" class="alerts"></ul>
+      </section>
+
+    </main>
+
+    <script src="/static/demos.js"></script>
+  </body>
+</html>

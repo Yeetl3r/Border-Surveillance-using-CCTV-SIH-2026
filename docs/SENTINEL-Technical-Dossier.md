@@ -1189,18 +1189,19 @@ on the grounds that a drone filling a third of a surveillance frame is metres
 from the lens rather than crossing a border.
 
 > **Measured** against 1,078 held-out drones and 442 frames of drone-free
-> footage:
+> footage, on the shipped weights (mAP@50 **0.9552**). Every row already has
+> the 35% area ceiling applied:
 >
-> | conf | max area | recall | frames with a false drone |
-> |---|---|---|---|
-> | 0.35 | 35% | 74.8% | 10.0% |
-> | 0.50 | none | 71.3% | 0.9% |
-> | **0.50** | **35%** | **68.9%** | **0.2%** |
-> | 0.60 | none | 62.6% | 0.0% |
+> | conf | recall | frames with a false drone |
+> |---|---|---|
+> | 0.60 | 72.8% | 11.3% |
+> | 0.70 | 66.5% | 6.3% |
+> | **0.75** | **62.2%** | **0.0%** |
+> | 0.80 | 54.9% | 0.0% |
+> | 0.85 | 41.2% | 0.0% |
 >
-> The ceiling buys six points of recall over simply raising the threshold, and
-> it does so by encoding a fact about the deployment rather than by tuning a
-> number.
+> The highest false confidence anywhere in that footage is 0.730, so 0.75 sits
+> just above it and 0.80 buys nothing while costing seven points.
 
 ### 13.6 Response
 

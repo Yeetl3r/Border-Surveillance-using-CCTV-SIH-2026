@@ -186,41 +186,92 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
             html = html.replace(f"/static/{name}", f"/static/{name}?v={v}")
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
+    @app.get("/demos", response_class=HTMLResponse)
+    async def demos_page() -> HTMLResponse:
+        """The scripted demonstrations, one per screen.
+
+        Separate from /analysis because the jobs differ: analysis is a free-run
+        operator surface pointed at whatever you hand it, while this is a fixed
+        sequence with a claim attached to each step.
+        """
+        html = (UI_DIR / "templates" / "demos.html").read_text(encoding="utf-8")
+        for name in ("app.css", "analysis.css", "demos.css", "demos.js"):
+            f = UI_DIR / "static" / name
+            v = int(f.stat().st_mtime) if f.exists() else 0
+            html = html.replace(f"/static/{name}", f"/static/{name}?v={v}")
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
     # -- video ---------------------------------------------------------------
     @app.get("/api/stream/{camera_id}")
-    async def stream(camera_id: str, raw: bool = Query(False)):
+    async def stream(camera_id: str, request: Request, raw: bool = Query(False)):
+        """MJPEG for one camera.
+
+        Async on purpose, and the reason is worth recording because the sync
+        version deadlocked the whole server.
+
+        A multipart/x-mixed-replace response never ends, so each open feed
+        holds one connection for as long as it is on screen. Starlette runs a
+        SYNC generator on a threadpool worker and can only notice the client
+        has gone at a yield point. This generator has a path -- camera bound
+        but not yet producing frames, which is exactly the state a demo camera
+        is in for the first second after being retargeted -- where it loops on
+        sleep and never yields at all. Every abandoned stream then pinned a
+        worker permanently, and after a few demo switches the threadpool was
+        gone and the server stopped answering anything, including the request
+        that would have switched away.
+
+        As an async generator the sleeps release the loop, the disconnect is
+        checked explicitly, and a camera that never produces a frame ends the
+        response instead of holding it open forever.
+        """
         pipe = system.pipelines.get(camera_id)
         if pipe is None:
             raise HTTPException(404, f"unknown camera {camera_id}")
 
-        def gen():
+        def encode(frame):
+            w = cfg.pipeline.stream_max_width
+            if frame.shape[1] > w:
+                sc = w / frame.shape[1]
+                frame = cv2.resize(frame, (w, int(frame.shape[0] * sc)))
+            ok, buf = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, cfg.pipeline.jpeg_quality])
+            return buf.tobytes() if ok else None
+
+        async def gen():
             boundary = b"--frame\r\n"
             last = 0.0
+            starved = 0.0
             while True:
+                if await request.is_disconnected():
+                    return
                 # ?raw=1 serves the detector's own input rather than the
                 # enhanced operator view. They are deliberately separate
                 # buffers, and showing them side by side is the honest way to
                 # present what the model actually saw.
                 frame = pipe.latest_raw if raw else pipe.latest_frame
                 if frame is None:
-                    time.sleep(0.05)
+                    starved += 0.05
+                    # A camera that has produced nothing for this long is not
+                    # about to. Ending the response frees the connection for
+                    # the page that is trying to replace it.
+                    if starved > 20.0:
+                        return
+                    await asyncio.sleep(0.05)
                     continue
+                starved = 0.0
+
                 now = time.time()
                 if now - last < 1.0 / 25.0:
-                    time.sleep(0.005)
+                    await asyncio.sleep(0.005)
                     continue
                 last = now
-                w = cfg.pipeline.stream_max_width
-                if frame.shape[1] > w:
-                    s = w / frame.shape[1]
-                    frame = cv2.resize(frame, (w, int(frame.shape[0] * s)))
-                ok, buf = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, cfg.pipeline.jpeg_quality])
-                if not ok:
+
+                data = await asyncio.to_thread(encode, frame)
+                if data is None:
                     continue
                 yield (boundary + b"Content-Type: image/jpeg\r\n"
-                       + f"Content-Length: {len(buf)}\r\n\r\n".encode()
-                       + buf.tobytes() + b"\r\n")
+                       + f"Content-Length: {len(data)}\r\n\r\n".encode()
+                       + data + b"\r\n")
 
         return StreamingResponse(
             gen(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -434,6 +485,99 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
         pipe.start()
 
         return {"ok": True, "camera_id": camera_id, "device_index": index, "live": True}
+
+    # -- scripted demonstrations --------------------------------------------
+    async def _retarget(pipe, source: str) -> None:
+        """Point a pipeline at a new source and restart it clean.
+
+        Shared by the demo runner and the upload/device endpoints. The stop,
+        the pause and the state resets all matter: restarting into a live
+        decoder loop double-reads the source, and carrying a tracker or a
+        confirmation window across a source change produces tracks that appear
+        to teleport between two unrelated scenes.
+        """
+        if pipe.running:
+            pipe.stop()
+            await asyncio.sleep(0.4)
+
+        if source.startswith("device:"):
+            pipe.cam.source = source.split(":", 1)[1] or "0"
+            pipe.cam.loop = False
+        else:
+            pipe.cam.source = source
+            pipe.cam.loop = True
+
+        pipe._stop.clear()
+        pipe.q_decode._closed = False
+        pipe.tracker.reset()
+        pipe.spatial.reset()
+        pipe.temporal.reset()
+        pipe.frames_in = pipe.frames_processed = 0
+        pipe.latest_overlay = {}
+        pipe.start()
+
+    @app.get("/api/demos")
+    async def list_demos() -> dict:
+        """The scripted demos, as configured. Read from configs/demos.yaml."""
+        return {"demos": [
+            {"id": d.id, "title": d.title, "claim": d.claim, "note": d.note.strip(),
+             "panels": [{"camera": p.camera, "label": p.label,
+                         "source": p.source, "live": p.source.startswith("device:")}
+                        for p in d.panels]}
+            for d in cfg.demos]}
+
+    @app.post("/api/demo/{demo_id}")
+    async def run_demo(demo_id: int) -> dict:
+        """Bind the demo's clips to its cameras and start only those.
+
+        Every other pipeline is stopped, cam01 included. Three pipelines each
+        running the detector would leave the one being watched at a third of
+        its frame rate, and the demo is the only thing anyone is looking at.
+        """
+        demo = next((d for d in cfg.demos if d.id == demo_id), None)
+        if demo is None:
+            raise HTTPException(404, f"no demo {demo_id}")
+
+        wanted = {p.camera for p in demo.panels}
+        missing = wanted - set(system.pipelines)
+        if missing:
+            raise HTTPException(
+                503, f"demo {demo_id} needs cameras that do not exist: "
+                     f"{', '.join(sorted(missing))}")
+
+        for cam_id, pipe in system.pipelines.items():
+            if cam_id not in wanted and pipe.running:
+                pipe.stop()
+
+        panels = []
+        for panel in demo.panels:
+            pipe = system.pipelines[panel.camera]
+            if panel.source.startswith("device:"):
+                index = int(panel.source.split(":", 1)[1] or 0)
+                probe = cv2.VideoCapture(index)
+                ok = probe.isOpened()
+                if ok:
+                    ok, _ = probe.read()
+                probe.release()
+                if not ok:
+                    raise HTTPException(
+                        400, f"no capture device at index {index}, or it is in "
+                             f"use by another application")
+            else:
+                if not (Path(cfg.root_dir) / panel.source).exists():
+                    raise HTTPException(404, f"clip not found: {panel.source}")
+
+            # Per-panel sensitivity, applied before the restart so the first
+            # decoded frame already runs at the right threshold.
+            pipe.cam.detector_overrides = dict(panel.detector)
+            pipe._det_conf = panel.detector.get("conf")
+            await _retarget(pipe, panel.source)
+            panels.append({"camera": panel.camera, "label": panel.label,
+                           "source": panel.source,
+                           "live": panel.source.startswith("device:")})
+
+        return {"ok": True, "demo": demo_id, "title": demo.title,
+                "claim": demo.claim, "note": demo.note.strip(), "panels": panels}
 
     # -- evidence ------------------------------------------------------------
     @app.get("/evidence/{path:path}")

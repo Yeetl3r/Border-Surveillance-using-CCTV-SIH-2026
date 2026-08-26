@@ -176,18 +176,18 @@ class Binder {
    ══════════════════════════════════════════════════════════════════════════ */
 
 const THREAT_COLOUR = {
-  INFO: "#5aa9e6",
-  FRIENDLY: "#2fd98a",
-  WATCH: "#ffc21a",
-  WARNING: "#ff7a1a",
-  CRITICAL: "#ff2b3d",
+  INFO: "#9dc4f0",
+  FRIENDLY: "#6fe3b0",
+  WATCH: "#ffd479",
+  WARNING: "#ffa04d",
+  CRITICAL: "#ff3b4e",
 };
 const THREAT_BG = {
-  INFO: "rgba(90,169,230,.09)",
-  FRIENDLY: "rgba(47,217,138,.09)",
-  WATCH: "rgba(255,194,26,.09)",
-  WARNING: "rgba(255,122,26,.09)",
-  CRITICAL: "rgba(255,43,61,.10)",
+  INFO: "rgba(157,196,240,.09)",
+  FRIENDLY: "rgba(111,227,176,.09)",
+  WATCH: "rgba(255,212,121,.09)",
+  WARNING: "rgba(255,160,77,.09)",
+  CRITICAL: "rgba(255,59,78,.10)",
 };
 
 const S = {
@@ -251,11 +251,11 @@ function viewModel() {
       name: t.id + " · " + t.name,
       note: t.note,
       status: done ? "DONE" : active ? "RUNNING" : "QUEUED",
-      dot: done ? "#2fd98a" : active ? "#ff1f3c" : "rgba(255,255,255,.16)",
-      glow: active ? "0 0 12px rgba(255,31,60,.9)"
-           : done ? "0 0 10px rgba(47,217,138,.6)" : "none",
-      fg: done ? "rgba(242,236,235,.85)"
-        : active ? "#ff8f9a" : "rgba(242,236,235,.35)",
+      dot: done ? "#6fe3b0" : active ? "#6aa8f5" : "rgba(255,255,255,.16)",
+      glow: active ? "0 0 12px rgba(106,168,245,.9)"
+           : done ? "0 0 10px rgba(111,227,176,.6)" : "none",
+      fg: done ? "rgba(232,238,247,.85)"
+        : active ? "#cfe4ff" : "rgba(232,238,247,.35)",
     };
   });
 
@@ -411,9 +411,9 @@ function paintRefs(vm) {
   if (r.health) {
     const ok = vm._health === "OK";
     r.health.textContent = "HEALTH " + vm._health;
-    r.health.style.color = ok ? "#8ff0c2" : "#ff8f9a";
-    r.health.style.background = ok ? "rgba(47,217,138,.14)" : "rgba(255,43,61,.16)";
-    r.health.style.borderColor = ok ? "rgba(47,217,138,.45)" : "rgba(255,43,61,.5)";
+    r.health.style.color = ok ? "#a7f0cf" : "#cfe4ff";
+    r.health.style.background = ok ? "rgba(111,227,176,.14)" : "rgba(255,59,78,.16)";
+    r.health.style.borderColor = ok ? "rgba(111,227,176,.45)" : "rgba(255,59,78,.5)";
   }
   if (r.sectorThreat) {
     r.sectorThreat.textContent = vm._threat;
@@ -502,7 +502,7 @@ function drawOverlay() {
     const ly = Math.max(0, y - 22);
     ctx.fillStyle = colour;
     ctx.fillRect(x, ly, tw, 19);
-    ctx.fillStyle = band === "LOW" ? "rgba(10,7,8,.9)" : "#0a0708";
+    ctx.fillStyle = band === "LOW" ? "rgba(8,12,20,.9)" : "#080c14";
     ctx.fillText(label, x + 7, ly + 13);
     ctx.restore();
 
@@ -520,9 +520,9 @@ function drawZones(ctx, X, Y) {
   for (const zone of z.zones || []) {
     if (!zone.points_px) continue;
     ctx.save();
-    ctx.strokeStyle = "rgba(255,31,60,.32)";
+    ctx.strokeStyle = "rgba(106,168,245,.32)";
     ctx.setLineDash([6, 5]); ctx.lineWidth = 1.2;
-    ctx.fillStyle = "rgba(255,31,60,.05)";
+    ctx.fillStyle = "rgba(106,168,245,.05)";
     ctx.beginPath();
     zone.points_px.forEach(([px, py], i) =>
       i ? ctx.lineTo(X(px), Y(py)) : ctx.moveTo(X(px), Y(py)));
@@ -534,7 +534,7 @@ function drawZones(ctx, X, Y) {
     if (!w.points_px) continue;
     const [[ax, ay], [bx, by]] = w.points_px;
     ctx.save();
-    ctx.strokeStyle = "#ff2b3d"; ctx.lineWidth = 1.6;
+    ctx.strokeStyle = "#ff3b4e"; ctx.lineWidth = 1.6;
     ctx.setLineDash([12, 10]);
     ctx.beginPath(); ctx.moveTo(X(ax), Y(ay)); ctx.lineTo(X(bx), Y(by)); ctx.stroke();
     ctx.setLineDash([]);
@@ -551,7 +551,7 @@ function drawZones(ctx, X, Y) {
       ctx.stroke();
     }
     ctx.font = "500 9.5px 'IBM Plex Mono', ui-monospace, monospace";
-    ctx.fillStyle = "rgba(255,43,61,.85)";
+    ctx.fillStyle = "rgba(255,59,78,.85)";
     ctx.fillText(`${w.label || w.id} · INBOUND`, X(ax) + 8, Y(ay) - 8);
     ctx.restore();
   }
@@ -560,7 +560,7 @@ function drawZones(ctx, X, Y) {
     if (!p.points_px) continue;
     const [px, py] = p.points_px[0];
     ctx.save();
-    ctx.strokeStyle = "rgba(255,122,26,.7)"; ctx.lineWidth = 1.4;
+    ctx.strokeStyle = "rgba(255,160,77,.7)"; ctx.lineWidth = 1.4;
     ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.arc(X(px), Y(py), 10, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
@@ -569,7 +569,7 @@ function drawZones(ctx, X, Y) {
     ctx.moveTo(X(px), Y(py) - 6); ctx.lineTo(X(px), Y(py) + 6);
     ctx.stroke();
     ctx.font = "500 9px 'IBM Plex Mono', ui-monospace, monospace";
-    ctx.fillStyle = "rgba(255,122,26,.85)";
+    ctx.fillStyle = "rgba(255,160,77,.85)";
     ctx.fillText(`${p.label || p.id} < ${p.threshold_m} m`, X(px) + 14, Y(py) + 3);
     ctx.restore();
   }

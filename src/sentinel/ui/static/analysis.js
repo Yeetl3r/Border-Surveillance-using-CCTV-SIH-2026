@@ -10,11 +10,11 @@
  */
 
 const THREAT = {
-  INFO:     { c: "#5aa9e6", bg: "rgba(90,169,230,.12)" },
-  FRIENDLY: { c: "#2fd98a", bg: "rgba(47,217,138,.12)" },
-  WATCH:    { c: "#ffc21a", bg: "rgba(255,194,26,.12)" },
-  WARNING:  { c: "#ff7a1a", bg: "rgba(255,122,26,.12)" },
-  CRITICAL: { c: "#ff2b3d", bg: "rgba(255,43,61,.14)" },
+  INFO:     { c: "#9dc4f0", bg: "rgba(157,196,240,.12)" },
+  FRIENDLY: { c: "#6fe3b0", bg: "rgba(111,227,176,.12)" },
+  WATCH:    { c: "#ffd479", bg: "rgba(255,212,121,.12)" },
+  WARNING:  { c: "#ffa04d", bg: "rgba(255,160,77,.12)" },
+  CRITICAL: { c: "#ff3b4e", bg: "rgba(255,59,78,.14)" },
 };
 const col = (t) => (THREAT[t] || THREAT.INFO).c;
 
@@ -210,7 +210,7 @@ function draw() {
     const tw = ctx.measureText(label).width + 12;
     const ly = Math.max(0, y - 20);
     ctx.fillStyle = c; ctx.fillRect(x, ly, tw, 17);
-    ctx.fillStyle = "#080506"; ctx.fillText(label, x + 6, ly + 12);
+    ctx.fillStyle = "#04070d"; ctx.fillText(label, x + 6, ly + 12);
     ctx.restore();
   }
 
@@ -238,7 +238,7 @@ function drawAerial(ctx, X, Y, scale) {
     ctx.font = "500 10px 'IBM Plex Mono', ui-monospace, monospace";
     const tw = ctx.measureText(label).width + 12;
     ctx.fillStyle = col("CRITICAL"); ctx.fillRect(x, Math.max(0, y - 20), tw, 17);
-    ctx.fillStyle = "#080506"; ctx.fillText(label, x + 6, Math.max(0, y - 20) + 12);
+    ctx.fillStyle = "#04070d"; ctx.fillText(label, x + 6, Math.max(0, y - 20) + 12);
     ctx.restore();
   }
 
@@ -253,7 +253,12 @@ function drawAerial(ctx, X, Y, scale) {
     ctx.lineWidth = 1.2; ctx.setLineDash([3, 4]);
     ctx.strokeRect(x, y, bw, bh);
     ctx.setLineDash([]);
-    const label = `BIRD · drone ${Number(wv.drone_conf).toFixed(2)} vs bird ${Number(wv.bird_conf).toFixed(2)}`;
+    // Two kinds of withholding reach this list and they read differently.
+    // A bird rejection names the rival; a size rejection names the fraction of
+    // frame the candidate covered. Assuming the bird shape prints "vs bird NaN".
+    const label = wv.bird_conf !== undefined
+      ? `BIRD · drone ${Number(wv.drone_conf).toFixed(2)} vs bird ${Number(wv.bird_conf).toFixed(2)}`
+      : `TOO LARGE · drone ${Number(wv.drone_conf).toFixed(2)} · ${Math.round(Number(wv.area_frac) * 100)}% of frame`;
     ctx.font = "500 9px 'IBM Plex Mono', ui-monospace, monospace";
     ctx.fillStyle = "rgba(160,160,170,.9)";
     ctx.fillText(label, x, Math.max(9, y - 5));
@@ -267,7 +272,7 @@ function drawZones(ctx, X, Y) {
   for (const zone of z.zones || []) {
     if (!zone.points_px) continue;
     ctx.save();
-    ctx.strokeStyle = "rgba(255,31,60,.3)"; ctx.setLineDash([6, 5]); ctx.lineWidth = 1.1;
+    ctx.strokeStyle = "rgba(106,168,245,.3)"; ctx.setLineDash([6, 5]); ctx.lineWidth = 1.1;
     ctx.beginPath();
     zone.points_px.forEach(([px, py], i) =>
       i ? ctx.lineTo(X(px), Y(py)) : ctx.moveTo(X(px), Y(py)));
@@ -277,7 +282,7 @@ function drawZones(ctx, X, Y) {
     if (!w.points_px) continue;
     const [[ax, ay], [bx, by]] = w.points_px;
     ctx.save();
-    ctx.strokeStyle = "#ff2b3d"; ctx.lineWidth = 1.6; ctx.setLineDash([11, 9]);
+    ctx.strokeStyle = "#ff3b4e"; ctx.lineWidth = 1.6; ctx.setLineDash([11, 9]);
     ctx.beginPath(); ctx.moveTo(X(ax), Y(ay)); ctx.lineTo(X(bx), Y(by)); ctx.stroke();
     ctx.setLineDash([]);
     if (w.inbound_arrow_px) {
@@ -292,7 +297,7 @@ function drawZones(ctx, X, Y) {
       ctx.stroke();
     }
     ctx.font = "500 9.5px 'IBM Plex Mono', monospace";
-    ctx.fillStyle = "rgba(255,43,61,.85)";
+    ctx.fillStyle = "rgba(255,59,78,.85)";
     ctx.fillText(`${w.label || w.id} · inbound`, X(ax) + 8, Y(ay) - 8);
     ctx.restore();
   }
@@ -300,11 +305,11 @@ function drawZones(ctx, X, Y) {
     if (!p.points_px) continue;
     const [px, py] = p.points_px[0];
     ctx.save();
-    ctx.strokeStyle = "rgba(255,122,26,.7)"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.3;
+    ctx.strokeStyle = "rgba(255,160,77,.7)"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.arc(X(px), Y(py), 9, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
     ctx.font = "500 9px 'IBM Plex Mono', monospace";
-    ctx.fillStyle = "rgba(255,122,26,.85)";
+    ctx.fillStyle = "rgba(255,160,77,.85)";
     ctx.fillText(`${p.label || p.id} < ${p.threshold_m} m`, X(px) + 13, Y(py) + 3);
     ctx.restore();
   }
@@ -339,7 +344,7 @@ function paint() {
     const d = el("div");
     d.appendChild(el("div", "k", k));
     const val = el("div", "v", v);
-    if (k === "CAMERA" && v !== "OK" && v !== "—") val.style.color = "#ff8f9a";
+    if (k === "CAMERA" && v !== "OK" && v !== "—") val.style.color = "#cfe4ff";
     d.appendChild(val);
     box.appendChild(d);
   }

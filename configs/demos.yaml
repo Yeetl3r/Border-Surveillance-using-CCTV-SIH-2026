@@ -1,0 +1,93 @@
+# The scripted demonstrations, in the order they are presented.
+#
+# Data, not code. Which clip each demo plays and what it claims to show are
+# presentation decisions, and they belong somewhere a person can edit an hour
+# before a presentation without touching Python.
+#
+# Each demo lists one or two panels. A panel binds a demo camera to a clip; the
+# demo page draws each panel as a raw feed on the left and the detection feed on
+# the right, so the audience can see what the model was given alongside what it
+# concluded. Two panels stack vertically, first listed on top.
+#
+# Only the cameras a demo names are started. The rest, cam01 included, are
+# stopped -- three pipelines running the detector at once would leave the one
+# being watched at a third of its frame rate.
+
+demos:
+  - id: 1
+    title: Weapon detection
+    claim: A specialised detector on a person crop, graded by who is carrying.
+    note: >
+      The weapon model never sees a full frame. It runs on the person box the
+      perimeter model already found, because a rifle at range is a handful of
+      pixels in a wide shot and legible only once cropped to its carrier.
+    panels:
+      - camera: demo_a
+        label: RIFLE ON PATROL
+        source: assets/demo/weapon_patrol.mp4
+
+  - id: 2
+    title: Drone versus bird
+    claim: Two models disagreeing, and the more confident one winning.
+    note: >
+      A drone detector that fires on every bird is worthless above a border.
+      The stock COCO model already carries bird as class 14, so the
+      discrimination is made between models rather than by a thin bird class.
+      Watch the top panel for what the system declines to call a drone.
+    panels:
+      - camera: demo_a
+        label: BIRDS IN FLIGHT
+        source: assets/demo/bird_flight.mp4
+      - camera: demo_b
+        label: DRONE IN FLIGHT
+        source: assets/demo/drone_flight.mp4
+
+  - id: 3
+    title: Video tampering
+    claim: The camera itself is a thing that can be attacked.
+    note: >
+      Covering a lens leaves the detector reporting a calm, empty scene. There
+      is no absolute blur threshold -- an IR night scene differs from daylight
+      by more than a covered lens differs from an open one -- so the system
+      learns this camera's own baseline and looks for a relative collapse.
+    panels:
+      - camera: demo_a
+        label: LENS OBSTRUCTION
+        source: assets/tamper_test.mp4
+
+  - id: 4
+    title: Animal versus crawling human
+    claim: The discrimination box geometry provably cannot make.
+    note: >
+      A person on hands and knees and a quadruped are the same shape, and the
+      class label is no better -- a detector trained on upright people calls a
+      crawling person an animal. Above a configured aspect ratio the label is
+      not trusted and the pose model is asked whether it sees a human.
+    panels:
+      - camera: demo_a
+        label: ELEPHANT HERD
+        source: assets/demo/animal_elephants.mp4
+      - camera: demo_b
+        label: HUMAN CRAWLING
+        source: assets/demo/human_crawl.mp4
+        detector:
+          # MEASURED on this clip: at the global 0.25 the crawling subject is
+          # detected in 23% of frames; at 0.10 it is 41%. A person on hands and
+          # knees presents almost none of the upright silhouette the detector
+          # was trained on, so it needs a lower floor than a perimeter camera
+          # -- where 0.10 would flood the tracker with noise. This is what
+          # per-camera sensitivity is for.
+          conf: 0.10
+
+  - id: 5
+    title: Live device camera
+    claim: The same pipeline, on a feed with no recording behind it.
+    note: >
+      Nothing downstream changes for a live source -- geometry, confirmation,
+      identity and evidence behave exactly as they do for a file. The transport
+      bar hides itself, because pause and seek have no meaning on a live feed
+      and controls that silently do nothing are worse than none.
+    panels:
+      - camera: demo_a
+        label: DEVICE CAMERA
+        source: "device:0"

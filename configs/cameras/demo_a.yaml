@@ -1,0 +1,29 @@
+# DEMO-A -- a scratch camera the demo page retargets.
+#
+# Deliberately carries NO homography, NO tripwire, NO zone and NO proximity
+# ring. Those belong to cam01, which is surveyed against one specific driveway;
+# applying them to a forest clip would report an elephant crossing a perimeter
+# line that does not exist there, and the demo would be showing a bug rather
+# than a capability. What is left is pure perception, which is exactly what
+# each demo is meant to isolate.
+#
+# autostart is false: the pipeline is built at boot so the demo page can
+# retarget it without waiting, but it does not run until a demo asks for it.
+# Two idle pipelines decoding clips nobody is watching would cost the active
+# one a third of its frame rate.
+
+camera_id: demo_a
+name: DEMO-A
+source: assets/demo/bird_flight.mp4
+loop: true
+enabled: true
+autostart: false
+pace_to_source_fps: true
+
+homography:
+  enabled: false
+
+tripwires: []
+zones: []
+proximity: []
+detector_overrides: {}

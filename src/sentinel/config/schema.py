@@ -470,6 +470,12 @@ class CameraCfg(BaseModel):
     loop: bool = True
     name: str = ""
     enabled: bool = True
+    # `enabled` means the pipeline is BUILT; `autostart` means it also runs at
+    # boot. The demo cameras exist from startup so the demo page can retarget
+    # them instantly, but they must not burn GPU decoding clips nobody is
+    # looking at -- three pipelines each running the detector would leave every
+    # one of them at a third of the frame rate.
+    autostart: bool = True
     read_timeout_s: float = 5.0
     reconnect_delay_s: float = 2.0
     # Cap ingest rate for file sources so a 12-second clip does not replay at
@@ -518,7 +524,10 @@ class AerialCfg(BaseModel):
     enabled: bool = False
     model: str = "drones_yolo26n.pt"
     imgsz: int = 960          # drones are small; do not downscale them away
-    conf: float = 0.50
+    # Measured on the shipped weights: 0.75 gives 62.2% recall at zero false
+    # frames across 442 frames of drone-free footage, whose highest false
+    # confidence is 0.730. See configs/system.yaml.
+    conf: float = 0.75
     every_n_frames: int = 2   # sky changes slowly; halve the cost
     # A drone filling a third of a surveillance frame is not a perimeter
     # intrusion -- it is a close-up, and the training set is full of them
@@ -532,8 +541,11 @@ class AerialCfg(BaseModel):
     # trained alongside the drone. A drone box that a confident stock bird
     # detection overlaps is withheld, and the reason is recorded.
     bird_class_id: int = 14
-    bird_iou: float = 0.45
-    bird_margin: float = 1.0  # bird_conf must exceed drone_conf x this to win
+    # Measured: 0.45/1.0 withheld only 14% of bird-clip candidates; 0.30/0.5
+    # withholds 70%. Two models box the same bird differently, and the drone
+    # model is the over-confident one. See configs/system.yaml.
+    bird_iou: float = 0.30
+    bird_margin: float = 0.25  # bird_conf must exceed drone_conf x this to win
 
 
 class ThreatCfg(BaseModel):
@@ -541,6 +553,36 @@ class ThreatCfg(BaseModel):
 
     weapons: WeaponCfg = Field(default_factory=WeaponCfg)
     aerial: AerialCfg = Field(default_factory=AerialCfg)
+
+
+class DemoPanelCfg(BaseModel):
+    """One feed inside a demo: a camera bound to a clip.
+
+    `detector` carries per-panel overrides, applied to the camera when the demo
+    is selected. Sensitivity is a property of the footage: a crawling subject
+    in a wide shot needs a lower confidence floor than a perimeter approach,
+    and the same floor on the perimeter would flood the tracker.
+    """
+
+    camera: str
+    label: str = ""
+    source: str
+    detector: dict[str, Any] = Field(default_factory=dict)
+
+
+class DemoCfg(BaseModel):
+    """One scripted demonstration.
+
+    `claim` is what the demo asserts in one line; `note` is the paragraph worth
+    saying out loud while it runs. Both live in config rather than in the
+    template so they can be reworded an hour before a presentation.
+    """
+
+    id: int
+    title: str
+    claim: str = ""
+    note: str = ""
+    panels: list[DemoPanelCfg] = Field(default_factory=list)
 
 
 class SystemCfg(BaseModel):
@@ -563,6 +605,7 @@ class SystemCfg(BaseModel):
     pipeline: PipelineCfg = Field(default_factory=PipelineCfg)
     api: ApiCfg = Field(default_factory=ApiCfg)
     cameras: list[CameraCfg] = Field(default_factory=list)
+    demos: list[DemoCfg] = Field(default_factory=list)
 
     # Populated at load time; recorded into every evidence record so an alert
     # can always name the thresholds that produced it.
@@ -634,6 +677,12 @@ def load_config(
             if cam:
                 cameras.append(cam)
     data["cameras"] = cameras
+
+    # The scripted demos are their own file for the same reason cameras are:
+    # which clip a demo plays is a presentation decision, not a system setting.
+    if "demos" not in data:
+        data["demos"] = (_read_yaml(cfg_dir / "demos.yaml") or {}).get("demos", [])
+
     data["profile_name"] = chosen
     data["root_dir"] = str(root)
 

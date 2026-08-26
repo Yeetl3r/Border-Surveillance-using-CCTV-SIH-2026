@@ -1,0 +1,116 @@
+/* SENTINEL — scripted demonstrations.
+ *
+ * Extends analysis.css rather than restating it: the shell, the threat pill,
+ * the alert list and the .frame/.pane primitives are all shared, because this
+ * page and the analysis page are the same operator surface with a different
+ * source of footage. What is added here is the demo rail, the stage header,
+ * and the stacked-panel layout that two-clip demos need.
+ */
+
+/* ── rail ──────────────────────────────────────────────────────────────── */
+.rail {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  padding: 12px; border: 1px solid var(--line);
+  border-radius: 16px; background: var(--card);
+}
+
+.rail button {
+  flex: 1 1 0; min-width: 148px;
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 12px 14px; text-align: left; cursor: pointer;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line-soft); border-radius: 12px;
+  font-family: inherit;
+  transition: border-color .18s ease, background .18s ease, color .18s ease;
+}
+.rail button:hover:not(:disabled) {
+  border-color: rgba(157,196,240,.34); color: var(--ink);
+}
+.rail button[aria-current="true"] {
+  border-color: var(--accent); background: rgba(106,168,245,.10); color: var(--ink);
+}
+/* The rail is disabled while a demo is being bound. Clicking a second demo
+   mid-switch would retarget a pipeline that is still unwinding from the last
+   one, and both would come up on the wrong clip. */
+.rail button:disabled { opacity: .4; cursor: wait; }
+
+.rail .n {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .18em;
+  color: var(--ink-3); text-transform: uppercase;
+}
+.rail button[aria-current="true"] .n { color: var(--accent); }
+.rail .t { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
+
+/* ── stage ─────────────────────────────────────────────────────────────── */
+.stage { display: flex; flex-direction: column; gap: 16px; }
+
+.stage-head { padding: 2px 4px; }
+.stage-head h1 {
+  margin: 0; font-size: clamp(22px, 3vw, 30px);
+  font-weight: 700; letter-spacing: -.03em;
+}
+.stage-head p {
+  margin: 8px 0 0; max-width: 88ch; font-size: 13.5px;
+  line-height: 1.72; color: var(--ink-2);
+}
+
+.panels { display: flex; flex-direction: column; gap: 18px; }
+
+/* One panel = one clip, shown twice: as the detector received it, and as the
+   system read it. Side by side because the comparison is the argument. */
+.panel {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px; border: 1px solid var(--line);
+  border-radius: 16px; background: var(--card);
+}
+.panel-head { display: flex; align-items: baseline; gap: 12px; padding: 0 2px; }
+.panel-head .live {
+  margin-left: auto; display: none; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+  color: var(--t-critical);
+}
+.panel-head .live b {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--t-critical);
+  box-shadow: 0 0 9px var(--t-critical); animation: breathe 2s ease-in-out infinite;
+}
+.panel.is-live .panel-head .live { display: flex; }
+
+.panel .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* Portrait phone footage is common in this set, so the frame is given a
+   generous box and the image is contained inside it rather than cropped —
+   cropping a vertical clip to a landscape box throws away the subject. */
+.panel .frame { aspect-ratio: 16 / 9; }
+.panel.portrait .frame { aspect-ratio: 4 / 5; }
+
+.panel figcaption { display: flex; align-items: baseline; gap: 10px; padding: 0 2px; }
+
+/* ── beneath ───────────────────────────────────────────────────────────── */
+.beneath {
+  padding: 14px 16px; border: 1px solid var(--line);
+  border-radius: 16px; background: var(--card);
+}
+.alerts-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+
+/* ── switching ─────────────────────────────────────────────────────────── */
+.switching {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 44%, rgba(106,168,245,.13) 0, transparent 40rem), rgba(4,7,13,.94);
+  backdrop-filter: blur(3px);
+}
+.switching[hidden] { display: none; }
+.switching-inner { text-align: center; }
+.switching-inner h2 {
+  margin: 0; font-size: clamp(20px, 3vw, 28px);
+  font-weight: 700; letter-spacing: -.03em;
+}
+.switching-inner p {
+  margin: 9px 0 0; font-family: var(--mono); font-size: 11px;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3);
+}
+
+@media (max-width: 1000px) {
+  .panel .pair { grid-template-columns: 1fr; }
+  .rail button { min-width: 120px; }
+}

@@ -81,9 +81,11 @@ class YoloDetector:
         self.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=self.cfg.imgsz,
                            device=self.device, verbose=False)
 
-    def _predict(self, frame: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _predict(self, frame: np.ndarray, conf: float | None = None,
+                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         r = self.model.predict(
-            frame, imgsz=self.cfg.imgsz, conf=self.cfg.conf, iou=self.cfg.iou,
+            frame, imgsz=self.cfg.imgsz, conf=conf if conf is not None else self.cfg.conf,
+            iou=self.cfg.iou,
             device=self.device, classes=self._kept or None,
             max_det=self.cfg.max_det, verbose=False)[0]
         if r.boxes is None or len(r.boxes) == 0:
@@ -141,15 +143,25 @@ class YoloDetector:
         keep_arr = np.asarray(sorted(keep), dtype=int)
         return B[keep_arr], C[keep_arr], K[keep_arr]
 
-    def detect(self, frame: np.ndarray) -> tuple[DetBatch, list[Detection]]:
+    def detect(self, frame: np.ndarray, conf: float | None = None,
+               ) -> tuple[DetBatch, list[Detection]]:
+        """Detect on one frame, optionally at a camera-specific confidence.
+
+        The per-camera override exists because sensitivity is a property of the
+        scene, not of the system. A crawling subject in a wide shot is detected
+        in 23% of frames at the global 0.25 and 41% at 0.10 -- and the same
+        0.10 on a busy perimeter would flood the tracker with noise. One
+        threshold cannot serve both, so the camera carries its own.
+        """
         s = self.cfg.sahi
         use_tiles = s.enabled and max(frame.shape[:2]) >= s.min_frame_px
-        xyxy, conf, cls = self._predict_tiled(frame) if use_tiles else self._predict(frame)
+        xyxy, conf_a, cls = (self._predict_tiled(frame) if use_tiles
+                             else self._predict(frame, conf))
 
         h, w = frame.shape[:2]
         m = 2  # a box within 2 px of a border is clipped by the frame, not the world
         dets: list[Detection] = []
-        for (x1, y1, x2, y2), cf, ci in zip(xyxy, conf, cls):
+        for (x1, y1, x2, y2), cf, ci in zip(xyxy, conf_a, cls):
             cid = int(ci)
             dets.append(Detection(
                 bbox_px=(float(x1), float(y1), float(x2), float(y2)),
@@ -161,7 +173,7 @@ class YoloDetector:
                 tier="T1",
                 edge_clipped=bool(x1 <= m or y1 <= m or x2 >= w - m or y2 >= h - m),
             ))
-        return DetBatch.from_xyxy(xyxy, conf, cls, self.model_id), dets
+        return DetBatch.from_xyxy(xyxy, conf_a, cls, self.model_id), dets
 
 
 def _pick_device(pref: str) -> str | int:
