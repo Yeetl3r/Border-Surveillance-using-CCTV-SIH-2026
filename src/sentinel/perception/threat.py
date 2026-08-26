@@ -192,6 +192,9 @@ class AerialDetector:
              frame_idx: int, at: datetime) -> list[Observation]:
         """``dets`` are this frame's perimeter detections -- the bird source."""
         if frame_idx % max(1, self.cfg.every_n_frames):
+            # Deliberately leaves `detections` and `withheld` intact. They feed
+            # the overlay, and clearing them on a skipped frame would make
+            # every drone box blink at half the frame rate.
             return []
         self.withheld, self.detections = [], []
 

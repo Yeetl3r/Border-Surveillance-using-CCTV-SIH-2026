@@ -86,6 +86,17 @@ def main(argv: list[str] | None = None) -> int:
 
 def banner(cfg) -> None:
     cams = ", ".join(c.camera_id for c in cfg.cameras if c.enabled)
+    # Name the specialised detectors and their operating points. A demo where
+    # the drone detector is quietly off looks identical to one where it is on
+    # and finding nothing, and the banner is the cheapest place to tell them
+    # apart.
+    spec = []
+    if cfg.threat.weapons.enabled:
+        spec.append(f"weapons@{cfg.threat.weapons.conf}")
+    if cfg.threat.aerial.enabled:
+        spec.append(f"aerial@{cfg.threat.aerial.conf}"
+                    f" (area<={cfg.threat.aerial.max_area_frac:.0%})")
+    specialised = ", ".join(spec) if spec else "none"
     print(f"""
   SENTINEL  --  border surveillance C2
   ------------------------------------------------------------------
@@ -94,6 +105,7 @@ def banner(cfg) -> None:
   detector   {cfg.detector.model}  imgsz={cfg.detector.imgsz} sahi={cfg.detector.sahi.enabled}
   tracker    {cfg.tracker.kind}
   pose F16   {'enabled' if cfg.pose.enabled else 'disabled'}
+  special    {specialised}
   identity   {'enabled' if cfg.identity.enabled else 'disabled'}  (open-set, friendly gallery)
   grounding  {'enabled' if cfg.vlm.enabled else 'disabled'}  {cfg.vlm.model_id}
   offline    {cfg.runtime.offline}  (F15)

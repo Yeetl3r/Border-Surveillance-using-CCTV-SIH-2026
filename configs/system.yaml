@@ -120,7 +120,20 @@ threat:                   # specialised detectors -- see perception/threat.py
     conf: 0.60
     max_crops_per_frame: 4
     min_crop_h: 64
-    crop_pad: 0.15
+    # How far outside the person box to look. A rifle held out to the side
+    # leaves the box that contains its carrier, and cropping tightly throws it
+    # away before the detector ever sees it.
+    #
+    # MEASURED end to end -- 193 held-out weapon images where a person was
+    # detected, against 153 person crops from weapon-free footage:
+    #   pad    raises WEAPON_VISIBLE on a weapon    on clean footage
+    #   0.15                 45.1%                      5.9%
+    #   0.30                 52.3%                      5.9%   <- configured
+    #   0.45                 55.4%                     10.5%
+    #   0.60                 56.0%                     10.5%
+    # 0.30 is free: seven points of recall at an unchanged false rate. Past it
+    # the crop starts admitting enough background to cost twice as much.
+    crop_pad: 0.30
   aerial:
     enabled: false        # needs weights/drones_yolo26n.pt
     model: drones_yolo26n.pt

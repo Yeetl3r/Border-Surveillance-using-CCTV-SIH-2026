@@ -72,11 +72,18 @@ friendly and `CRITICAL` on someone unidentified. A guard on patrol is armed.
 That is the whole point of grading by identity rather than by object class.
 
 > **Measured** on the held-out validation split (905 images, 1,062 weapons):
-> mAP@50 **0.802**. Recall against false-positive cost is a tunable trade, and
-> both halves are recorded above the `conf` setting in `configs/system.yaml`.
-> At the configured 0.60 the detector recalls 59.4% of real weapons and draws
-> roughly two spurious boxes across 260 frames of weapon-free footage — none of
-> which survive temporal confirmation into an alert.
+> mAP@50 **0.802**. At the configured 0.60 confidence the detector recalls
+> 59.4% of real weapons and draws roughly two spurious boxes across 260 frames
+> of weapon-free footage — none of which survive temporal confirmation into an
+> alert.
+>
+> End to end through the pipeline the number that matters is different, because
+> the detector only ever sees a person crop: across 193 held-out weapon images
+> where a person was detected, **52.3%** raised a `WEAPON_VISIBLE` observation,
+> against **5.9%** of person crops from weapon-free footage. Widening the crop
+> beyond the person box from 15% to 30% bought seven of those points at no
+> cost in false positives — a rifle held out to the side leaves the box that
+> contains its carrier.
 
 **Honesty note.** The first weapons dataset tried here produced mAP@50 of
 0.009. It was not a training failure: 36% of its boxes fell outside the image,
@@ -92,7 +99,12 @@ converted labels back onto their images before training on them.
 **What it shows.** A class COCO does not have, and the discrimination that
 makes it useful rather than annoying.
 
-**Footage.** Any clip containing a small UAV against sky.
+**Footage.** Any clip containing a small UAV against sky. The device camera
+works too — but hold the drone at arm's length rather than up against the lens.
+A candidate covering more than 35% of the frame is withheld by design (see
+below), so a drone filling the whole webcam view will be declined, with the
+reason printed. At roughly a metre from a laptop camera a small quadcopter
+occupies about 2% of the frame, well inside the ceiling.
 
 **What to watch for.** The drone is drawn with a reticle rather than a plain
 box, because an aerial contact is not a ground contact. And if a bird is in
@@ -116,6 +128,33 @@ candidates go to a display-only list.
 This is the part of the system least likely to be exercised by a demo, since it
 only fires when a bird happens to fly through frame, so it is tested directly
 in `tests/test_threat.py` rather than left to luck.
+
+**The size ceiling.** Aerial training data is real imagery but it is not
+*surveillance* imagery — FPV footage and product photography dominate, and 44%
+of the boxes in the set used here cover more than 2.25% of the image. A model
+trained on that will, on a dark wide shot, propose a box covering half the
+frame at 0.57 confidence. On this project's own demo clip that fired on **98.3%
+of frames**.
+
+The fix is not a higher confidence threshold, which costs recall everywhere to
+solve a problem that only occurs at one end of the size distribution. A
+candidate covering more than a configured fraction of the frame is withheld
+instead, on the grounds that a drone filling a third of a surveillance frame is
+metres from the lens rather than crossing a border.
+
+> **Measured** against 1,078 held-out drones and 442 frames of drone-free
+> footage:
+>
+> | conf | max area | recall | frames with a false drone |
+> |---|---|---|---|
+> | 0.35 | 35% | 74.8% | 10.0% |
+> | 0.50 | none | 71.3% | 0.9% |
+> | **0.50** | **35%** | **68.9%** | **0.2%** |
+> | 0.60 | none | 62.6% | 0.0% |
+>
+> The ceiling buys six points of recall over simply raising the threshold, and
+> does it by encoding a fact about the deployment rather than by tuning a
+> number.
 
 **Data note.** The first drone dataset tried here was 21 GB of simulator
 renders shipped as RGBA instance masks with no boxes. Boxes are recoverable
