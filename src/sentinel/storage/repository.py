@@ -189,6 +189,11 @@ class Repository:
                 row.setdefault(key, None)
         row["observations"] = self.query(
             "SELECT * FROM observations WHERE alert_id=? ORDER BY at", (alert_id,))
+        # Evidence paths are stored with the platform separator but are served
+        # over HTTP; a Windows backslash does not survive that round trip.
+        for k in ("keyframe_path", "crop_path", "clip_path"):
+            if row.get(k):
+                row[k] = str(row[k]).replace("\\", "/")
         return row
 
     def stats(self) -> dict[str, Any]:

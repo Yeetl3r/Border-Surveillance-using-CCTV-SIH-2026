@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SENTINEL // Analysis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/analysis.css">
+  </head>
+  <body class="analysis">
+
+    <!-- ════════════ loading ════════════ -->
+    <div id="loader" class="loader">
+      <div class="loader-inner">
+        <div class="loader-mark"><span></span></div>
+        <h1>Analysing the feed</h1>
+        <p id="loader-source">reference clip</p>
+
+        <div class="loader-bar"><div id="loader-fill"></div></div>
+        <div class="loader-pct"><span id="loader-stage">starting</span><span id="loader-pct">0%</span></div>
+
+        <ul id="loader-log" class="loader-log"></ul>
+      </div>
+    </div>
+
+    <!-- ════════════ analysis ════════════ -->
+    <main id="app" hidden>
+
+      <header class="bar">
+        <a class="brand" href="/">
+          <span class="dot"></span>
+          <span>SENTINEL</span>
+        </a>
+        <div class="src" id="src-label">reference clip</div>
+        <div class="spacer"></div>
+        <div class="threat" id="threat-wrap">
+          <span class="threat-cap">SECTOR THREAT</span>
+          <span class="threat-pill" id="threat-pill"><i></i><b id="threat-val">—</b></span>
+        </div>
+        <a class="ghost" href="/#demo">RUN ANOTHER FEED</a>
+      </header>
+
+      <!-- side by side: as given / with detection -->
+      <section class="panes">
+        <figure class="pane">
+          <figcaption>
+            <span class="tag">AS GIVEN</span>
+            <span class="sub">raw sensor frame — what the detector receives</span>
+          </figcaption>
+          <div class="frame">
+            <img id="raw" alt="source footage as given">
+          </div>
+        </figure>
+
+        <figure class="pane">
+          <figcaption>
+            <span class="tag accent">WITH DETECTION</span>
+            <span class="sub" id="det-sub">tracks, zones and distances in metres</span>
+          </figcaption>
+          <div class="frame">
+            <img id="det" alt="operator view">
+            <canvas id="ovl"></canvas>
+          </div>
+        </figure>
+      </section>
+
+      <div class="strip" id="strip"></div>
+
+      <!-- alerts + ask -->
+      <section class="lower">
+        <nav class="tabs">
+          <button data-tab="alerts" class="on">ALERTS <span id="tab-count">0</span></button>
+          <button data-tab="ask">ASK</button>
+        </nav>
+
+        <div class="tabpane" id="pane-alerts">
+          <div class="alert-list" id="alert-list"></div>
+          <div class="alert-detail" id="alert-detail">
+            <p class="muted">Select an alert to see what it was raised on.</p>
+          </div>
+        </div>
+
+        <div class="tabpane" id="pane-ask" hidden>
+          <form class="ask" id="ask-form">
+            <input id="ask-input" autocomplete="off"
+                   placeholder="Ask about this footage — e.g. when was the last breach?">
+            <button type="submit" id="ask-btn">ASK</button>
+          </form>
+          <div class="chips">
+            <button type="button">when was the last alert?</button>
+            <button type="button">how many perimeter breaches today?</button>
+            <button type="button">show live alerts</button>
+            <button type="button">who is track #1?</button>
+            <button type="button">where is the person in this frame?</button>
+          </div>
+          <div id="ask-out" class="ask-out"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/analysis.js"></script>
+  </body>
+</html>

@@ -570,84 +570,32 @@ function paint() {
 async function takeFile(file) {
   if (!file) return;
   S.fileName = file.name;
-  S.sourceLabel = file.name.toUpperCase();
-  S.videoUrl = URL.createObjectURL(file);
+  S.sourceLabel = file.name;
   await start(file);
 }
 
 async function start(file) {
-  S.phase = "running";
-  S.step = 0;
-  S.logLines = [];
-  S.startedAt = Date.now();
-  paint();
+  // Handing a feed over is a navigation, not a state change. The analysis
+  // screen is a different page with a different job, so the source is
+  // submitted here and the browser goes there.
+  const zone = document.querySelector('[data-click="pickFile"]');
+  if (zone) zone.style.opacity = ".55";
 
   if (file) {
-    log(`ingesting ${file.name} · ${(file.size / 1e6).toFixed(1)} MB · read locally, never uploaded`);
     const fd = new FormData();
     fd.append("video", file);
     try {
       const r = await fetch("/api/source", { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) throw new Error(j.detail || "source rejected");
-      S.cameraId = j.camera_id;
-      log(`source swapped on ${j.camera_id} · pipeline restarted`);
+      sessionStorage.setItem("sentinel.source", file.name);
     } catch (err) {
-      log(`source could not be swapped (${err.message}) — continuing on the reference feed`);
+      sessionStorage.setItem("sentinel.source", file.name + " (source swap failed)");
     }
   } else {
-    log("reference clip selected · 1280×720 · 15 fps · IR · ~97 kbps");
+    sessionStorage.setItem("sentinel.source", "reference clip · 1280x720 · IR");
   }
-
-  // Progress is driven by real telemetry arriving over the socket, not by a
-  // timer. The lines below are emitted from measured values as they land.
-  await pollUntilReady();
-}
-
-async function pollUntilReady() {
-  const t0 = Date.now();
-  const seen = new Set();
-  const tick = async () => {
-    if (S.phase !== "running") return;
-    try {
-      const st = await (await fetch("/api/status")).json();
-      S.status = st;
-      const cam = (st.cameras || [])[0] || {};
-      if (!S.cameraId) S.cameraId = cam.camera_id;
-
-      const say = (k, msg) => { if (!seen.has(k)) { seen.add(k); log(msg); } };
-
-      if (cam.frames_processed > 0)
-        say("decode", `decode running · ${cam.frames_processed} frames · health ${cam.health}`);
-      if (cam.homography && cam.homography.calibrated)
-        say("h", `homography ${cam.homography.homography_id} · round-trip residual ${cam.homography.residual_m} m`);
-      if (cam.perf && cam.perf.fps)
-        say("fps", `perception steady · ${cam.perf.fps.toFixed(1)} FPS · detect ${cam.perf.detect_ms} ms · track ${cam.perf.track_ms} ms`);
-      if (cam.perf && cam.perf.logic_ms !== undefined)
-        say("logic", `spatial + temporal reasoning ${cam.perf.logic_ms} ms/frame`);
-      if (st.identity && st.identity.vectors)
-        say("id", `identity gallery loaded · ${st.identity.identities} enrolled · threshold ${st.identity.threshold}`);
-      if (cam.pending_candidates > 0)
-        say("obs", `${cam.pending_candidates} observation(s) accumulating · NOT alerts · awaiting confirmation`);
-      if (st.counters && st.counters.promoted > 0)
-        say("promo", `confirmation satisfied · ${st.counters.promoted} alert(s) promoted · evidence written`);
-      if (st.queue_drops > 0)
-        say("drop", `Q1 drop-oldest engaged · ${st.queue_drops} frames shed to hold latency`);
-
-      const ready = cam.frames_processed > 25 &&
-                    (st.counters?.promoted > 0 || Date.now() - t0 > 12000);
-      if (ready) {
-        log(`sector threat recomputed from the live alert set · ${st.threat}`);
-        await refreshAlerts();
-        S.phase = "done";
-        paint();
-        return;
-      }
-    } catch (e) { /* transient during restart */ }
-    paint();
-    setTimeout(tick, 700);
-  };
-  tick();
+  location.href = "/analysis";
 }
 
 /* ── data ──────────────────────────────────────────────────────────────── */
@@ -708,6 +656,45 @@ function connect() {
   setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 15000);
 }
 
+/* ── hero eye ──────────────────────────────────────────────────────────────
+   The iris follows the pointer. Travel is capped at a quarter of the eyeball
+   width so it reads as a glance rather than the iris escaping the socket. The
+   listener is passive: it never calls preventDefault, so it cannot interfere
+   with scrolling.
+   ──────────────────────────────────────────────────────────────────────── */
+function initEye() {
+  const iris = binder.refs.irisRef
+    || document.querySelector('[data-ref="irisRef"]');
+  if (!iris) return;
+  const eyeball = iris.parentElement;
+  if (!eyeball) return;
+
+  // Written straight through rather than deferred to requestAnimationFrame:
+  // mousemove is already delivered at frame rate, so the deferral bought
+  // nothing, and rAF does not fire at all while the page is hidden — which
+  // left the iris frozen wherever it last looked.
+  const look = (dx, dy) => {
+    const r = eyeball.getBoundingClientRect();
+    if (!r.width) return;
+    const maxTravel = r.width / 4;             // a glance, not an escape
+    const angle = Math.atan2(dy, dx);
+    const dist = Math.min(Math.hypot(dx, dy), maxTravel);
+    const x = Math.cos(angle) * dist, y = Math.sin(angle) * dist;
+    // The design centres the iris with translate(-50%,-50%); the offset is
+    // applied on top of that anchor.
+    iris.style.transform =
+      `translate(calc(-50% + ${x.toFixed(1)}px), calc(-50% + ${y.toFixed(1)}px))`;
+  };
+
+  window.addEventListener("mousemove", (e) => {
+    const r = eyeball.getBoundingClientRect();
+    look(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2));
+  }, { passive: true });
+
+  // Settle back to centre when the pointer leaves the window entirely.
+  window.addEventListener("mouseout", (e) => { if (!e.relatedTarget) look(0, 0); });
+}
+
 /* ── boot ──────────────────────────────────────────────────────────────── */
 window.addEventListener("DOMContentLoaded", async () => {
   binder = new Binder(document.body);
@@ -715,6 +702,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   const cam = (S.status.cameras || [])[0];
   if (cam) S.cameraId = cam.camera_id;
   paint();
+  initEye();
   connect();
   window.addEventListener("resize", () => { if (S.phase === "done") drawOverlay(); });
   setInterval(() => { if (S.phase === "done") drawOverlay(); }, 120);

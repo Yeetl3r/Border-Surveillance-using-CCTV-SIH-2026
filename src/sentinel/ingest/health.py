@@ -76,6 +76,10 @@ class HealthMonitor:
         self._state = HealthState.OK
         self._since = datetime.now(timezone.utc)
         self._last_detail = ""
+        # Per-camera healthy sharpness baseline, learned rather than assumed.
+        self._blur_baseline: float | None = None
+        self._ssim_baseline: float | None = None
+        self._blur_seen = 0
 
     def _small_grey(self, frame: np.ndarray) -> np.ndarray:
         s = self.cfg.ssim_size
@@ -115,12 +119,35 @@ class HealthMonitor:
             self._frozen = self._frozen + 1 if identical else 0
         self._last_small = small
 
+        cfg = self.cfg
+        warm = (self._blur_baseline is not None
+                and self._ssim_baseline is not None
+                and self._blur_seen >= cfg.blur_warmup_frames)
+        rel_b = blur / self._blur_baseline if warm else 1.0
+        rel_s = s / self._ssim_baseline if warm else 1.0
+
         faults: list[str] = []
-        if blur < self.cfg.blur_min:
-            faults.append(f"low sharpness ({blur:.0f} < {self.cfg.blur_min:.0f})")
-        if s < self.cfg.ssim_min:
-            faults.append(f"structural drift (SSIM {s:.2f} < {self.cfg.ssim_min:.2f})")
-        if self._frozen >= self.cfg.freeze_max_frames:
+        blackout = blur < cfg.blur_min
+        defocus = warm and rel_b < cfg.blur_drop_ratio
+        drift = s < cfg.ssim_min
+        frozen = self._frozen >= cfg.freeze_max_frames
+
+        # Obstruction: something held over the lens. Neither signal catches it
+        # alone -- a palm stays sharp and the view it replaces stays
+        # structured -- so the rule is their conjunction, at a measured
+        # operating point (see HealthCfg).
+        obstruct = warm and rel_b < cfg.obstruct_blur_ratio and rel_s < cfg.obstruct_ssim_ratio
+
+        if blackout:
+            faults.append(f"lens dark ({blur:.0f} < {cfg.blur_min:.0f})")
+        if defocus:
+            faults.append(f"sharpness collapse ({rel_b * 100:.0f}% of baseline)")
+        if obstruct and not defocus:
+            faults.append(f"lens obstructed (sharpness {rel_b * 100:.0f}%, "
+                          f"structure {rel_s * 100:.0f}% of baseline)")
+        if drift:
+            faults.append(f"structural drift (SSIM {s:.2f} < {cfg.ssim_min:.2f})")
+        if frozen:
             faults.append(f"feed frozen ({self._frozen} identical frames)")
 
         if faults:
@@ -129,13 +156,26 @@ class HealthMonitor:
         else:
             self._good_streak += 1
             self._bad_streak = 0
+            # Baselines learn only from frames that raised no fault this
+            # instant -- not merely from frames while the reported state is
+            # still OK. During the confirmation delay those differ, and keying
+            # on state let a tamper teach the camera that the tamper is normal.
+            self._blur_seen += 1
+            a = cfg.blur_baseline_alpha
+            self._blur_baseline = (blur if self._blur_baseline is None
+                                   else (1 - a) * self._blur_baseline + a * blur)
+            a2 = cfg.ssim_baseline_alpha
+            self._ssim_baseline = (max(s, 1e-3) if self._ssim_baseline is None
+                                   else (1 - a2) * self._ssim_baseline + a2 * s)
 
         new_state = self._state
         if self._bad_streak >= self.cfg.consecutive_bad:
-            if self._frozen >= self.cfg.freeze_max_frames:
+            if frozen:
                 new_state = HealthState.SIGNAL_LOST
-            elif blur < self.cfg.blur_min * 0.45 or s < self.cfg.ssim_min * 0.6:
-                new_state = HealthState.TAMPERED     # decisive loss, not weather
+            elif blackout or obstruct or (defocus and drift):
+                # Deliberate interference, not weather: the lens is dark, the
+                # view is covered, or sharpness and structure collapsed together.
+                new_state = HealthState.TAMPERED
             else:
                 new_state = HealthState.DEGRADED
             self._last_detail = "; ".join(faults)
@@ -147,10 +187,15 @@ class HealthMonitor:
             self._state = new_state
             self._since = datetime.now(timezone.utc)
 
-        # Only fold healthy frames into the reference, and slowly. A fast EMA
-        # would absorb a lens cover within a second and then report OK -- the
-        # tamper would erase its own evidence.
-        if self._state == HealthState.OK:
+        # Only fold healthy frames into the reference, and slowly.
+        #
+        # The condition is "this frame raised no faults", NOT "the reported
+        # state is still OK". Those differ during the confirmation delay, and
+        # the difference matters: a hand held over the lens raises faults
+        # immediately but the state stays OK for `consecutive_bad` frames, so
+        # keying on state let the reference absorb the palm and the tamper
+        # erased its own evidence.
+        if not faults:
             a = self.cfg.ref_update_alpha
             self._ref = (1 - a) * self._ref + a * small.astype(np.float32)
 

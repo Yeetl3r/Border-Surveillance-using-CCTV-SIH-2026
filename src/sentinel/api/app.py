@@ -171,6 +171,21 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
             html = html.replace(f"/static/{name}", f"/static/{name}?v={v}")
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
+    @app.get("/analysis", response_class=HTMLResponse)
+    async def analysis() -> HTMLResponse:
+        """The analysis screen, reached once a feed has been submitted.
+
+        A separate page rather than a state of the landing page: the operator
+        view and the pitch surface have different jobs, and mixing them means
+        the thing you look at under pressure carries the marketing chrome.
+        """
+        html = (UI_DIR / "templates" / "analysis.html").read_text(encoding="utf-8")
+        for name in ("app.css", "analysis.css", "analysis.js"):
+            p = UI_DIR / "static" / name
+            v = int(p.stat().st_mtime) if p.exists() else 0
+            html = html.replace(f"/static/{name}", f"/static/{name}?v={v}")
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
     # -- video ---------------------------------------------------------------
     @app.get("/api/stream/{camera_id}")
     async def stream(camera_id: str, raw: bool = Query(False)):
@@ -182,7 +197,11 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
             boundary = b"--frame\r\n"
             last = 0.0
             while True:
-                frame = pipe.latest_frame
+                # ?raw=1 serves the detector's own input rather than the
+                # enhanced operator view. They are deliberately separate
+                # buffers, and showing them side by side is the honest way to
+                # present what the model actually saw.
+                frame = pipe.latest_raw if raw else pipe.latest_frame
                 if frame is None:
                     time.sleep(0.05)
                     continue

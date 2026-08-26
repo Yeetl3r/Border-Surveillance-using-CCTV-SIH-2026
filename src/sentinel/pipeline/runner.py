@@ -90,6 +90,7 @@ class CameraPipeline:
 
         self.perf = Perf()
         self.latest_frame: np.ndarray | None = None
+        self.latest_raw: np.ndarray | None = None
         self.latest_overlay: dict[str, Any] = {}
         self.tracks: dict[int, Track] = {}
         self.health_state = "OK"
@@ -145,6 +146,7 @@ class CameraPipeline:
         self.frames_processed += 1
         self.health_state = bundle.health.state.value
         self.latest_frame = bundle.operator_frame
+        self.latest_raw = bundle.raw
         self.clip.push(bundle.captured_at, bundle.raw)
 
         # -- Tier 1 ----------------------------------------------------------

@@ -130,13 +130,40 @@ class HealthCfg(BaseModel):
     """
 
     enabled: bool = True
-    blur_min: float = 55.0          # Laplacian variance below this = defocus/obscured
+    blur_min: float = 55.0          # absolute floor: a true blackout, any camera
     ssim_min: float = 0.55          # structural drift below this = repositioned/covered
     ssim_size: int = 160            # downscale for SSIM; full-res is wasteful
     freeze_max_frames: int = 25     # identical frames before declaring a frozen feed
     ref_update_alpha: float = 0.02  # rolling reference EMA; slow enough to ignore people
     consecutive_bad: int = 5        # frames of fault before state changes (anti-flicker)
     check_within_s: float = 1.0
+
+    # An ABSOLUTE sharpness floor does not transfer between cameras. A dark IR
+    # scene sits at a Laplacian variance around 190; a bright indoor camera
+    # sits near 970. A floor tuned for one is meaningless on the other, and a
+    # hand held over a well-lit lens stays sharp (skin texture) while being
+    # completely wrong -- it never approaches an absolute floor.
+    #
+    # So each camera also learns its own healthy baseline and reports a
+    # RELATIVE collapse against it.
+    blur_baseline_alpha: float = 0.01   # EMA of the healthy baseline
+    blur_warmup_frames: int = 30        # frames before the baseline is trusted
+    blur_drop_ratio: float = 0.55       # severe defocus alone: blur < ratio x baseline
+
+    # Obstruction — something held over the lens — is the case neither signal
+    # catches alone. A palm is still sharp in absolute terms and the scene it
+    # replaces is still structured, so blur and SSIM each overlap the healthy
+    # range. Measured on assets/tamper_test.mp4 against a hand-labelled event:
+    #
+    #   relative blur   healthy min 0.796   tampered max 0.845
+    #   relative SSIM   healthy min 0.644   tampered max 0.929
+    #   combined        99% recall, 1 false positive in 760 healthy frames
+    #
+    # So the rule is the conjunction, and the ratios below are the measured
+    # operating point rather than a guess.
+    obstruct_blur_ratio: float = 0.85
+    obstruct_ssim_ratio: float = 0.90
+    ssim_baseline_alpha: float = 0.01
 
 
 class EnhanceCfg(BaseModel):
