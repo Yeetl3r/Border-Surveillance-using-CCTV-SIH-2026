@@ -67,6 +67,28 @@
         </figure>
       </section>
 
+      <!-- Transport. Recorded sources only — a live camera has no position to
+           seek to, so the whole bar is withheld rather than shown inert. -->
+      <div class="transport" id="transport" hidden>
+        <button id="tp-play" title="Play / pause">▶</button>
+        <button id="tp-restart" title="Back to start">⏮</button>
+        <input id="tp-seek" type="range" min="0" max="1000" value="0" step="1"
+               aria-label="Playback position">
+        <span class="tp-time" id="tp-time">0:00 / 0:00</span>
+        <div class="tp-rates" id="tp-rates">
+          <button data-rate="0.25">0.25×</button>
+          <button data-rate="0.5">0.5×</button>
+          <button data-rate="1" class="on">1×</button>
+          <button data-rate="2">2×</button>
+          <button data-rate="4">4×</button>
+        </div>
+      </div>
+
+      <div class="livebadge" id="livebadge" hidden>
+        <span class="dot"></span>
+        LIVE CAPTURE · this device's camera · no transport control on a live feed
+      </div>
+
       <div class="strip" id="strip"></div>
 
       <!-- alerts + ask -->
@@ -84,6 +106,10 @@
         </div>
 
         <div class="tabpane" id="pane-ask" hidden>
+          <div class="devicerow">
+            <button type="button" id="use-device">USE THIS DEVICE'S CAMERA</button>
+            <span>Switches the feed to a locally attached camera. Nothing is uploaded; frames are read from the device and processed in place.</span>
+          </div>
           <form class="ask" id="ask-form">
             <input id="ask-input" autocomplete="off"
                    placeholder="Ask about this footage — e.g. when was the last breach?">

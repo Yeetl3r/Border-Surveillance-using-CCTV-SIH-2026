@@ -23,3 +23,7 @@ Thumbs.db
 .claude/
 .vscode/*
 !.vscode/launch.json
+
+# Training data and runs -- fetched with scripts/fetch_datasets.py, gigabytes
+datasets/
+runs/

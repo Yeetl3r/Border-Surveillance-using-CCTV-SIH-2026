@@ -91,6 +91,7 @@ class CameraPipeline:
         self.perf = Perf()
         self.latest_frame: np.ndarray | None = None
         self.latest_raw: np.ndarray | None = None
+        self.source = None            # set on the ingest thread; drives transport
         self.latest_overlay: dict[str, Any] = {}
         self.tracks: dict[int, Track] = {}
         self.health_state = "OK"
@@ -117,6 +118,7 @@ class CameraPipeline:
     # -- stage 1: decode -----------------------------------------------------
     def _ingest_loop(self) -> None:
         source = build_source(self.cam, self.cfg)
+        self.source = source
         try:
             for bundle in source.frames():
                 if self._stop.is_set():
@@ -272,6 +274,9 @@ class CameraPipeline:
             "pending_candidates": self.temporal.pending_candidates,
             "metric": self.zones.metric,
             "homography": self.zones.homography.describe(),
+            "transport": (self.source.transport() if self.source is not None
+                          else {"live": False, "paused": False, "rate": 1.0,
+                                "position": 0, "total_frames": 0, "duration_s": 0.0}),
         }
 
 

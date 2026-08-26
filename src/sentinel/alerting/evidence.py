@@ -31,7 +31,7 @@ import cv2
 import numpy as np
 
 from ..config import StorageCfg, SystemCfg, resolve
-from ..contracts import Alert, EvidenceRef, Track
+from ..contracts import Alert, EvidenceRef, ObjectGroup, Track
 
 
 class ClipBuffer:
@@ -142,9 +142,18 @@ class EvidenceWriter:
         self.clip_dir.mkdir(parents=True, exist_ok=True)
         self.model_ids: dict[str, str] = {}
 
+        # Face localisation is detection only -- it cuts a recognisable image
+        # out of the subject crop so an operator can see WHO was seen. It never
+        # decides identity; that stays with the open-set gallery.
+        from ..config import resolve as _resolve
+        from ..identity.face import FaceLocator
+        self.faces = FaceLocator(_resolve(cfg, "weights/face_detection_yunet_2023mar.onnx"))
+
     def register_models(self, **ids: str) -> None:
         """Record which models are in play, for the provenance block."""
         self.model_ids.update({k: v for k, v in ids.items() if v})
+        if self.faces.available:
+            self.model_ids.setdefault("face", self.faces.model_id)
 
     def build(
         self,
@@ -176,6 +185,18 @@ class EvidenceWriter:
                 cp = self.evidence_dir / f"{base}_crop.jpg"
                 cv2.imwrite(str(cp), crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
                 ref.crop_path = str(cp.relative_to(Path(self.cfg.root_dir)))
+
+                # A head-and-shoulders cut, when the subject is a person and a
+                # face is actually visible. Absence is normal and is left
+                # blank rather than filled with a guess -- a subject facing
+                # away has no face to show, and inventing one would be worse
+                # than an empty tile.
+                if subject.group is ObjectGroup.PERSON:
+                    face = self.faces.cut(crop)
+                    if face is not None and face.size:
+                        fp = self.evidence_dir / f"{base}_face.jpg"
+                        cv2.imwrite(str(fp), face, [cv2.IMWRITE_JPEG_QUALITY, 94])
+                        ref.face_path = str(fp.relative_to(Path(self.cfg.root_dir)))
 
         if clip is not None:
             cl = self.clip_dir / f"{base}.mp4"

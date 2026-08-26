@@ -45,10 +45,24 @@ class Repository:
             self._local.conn = c
         return c
 
+    # Columns added after the first release. `CREATE TABLE IF NOT EXISTS` does
+    # nothing to a table that already exists, so an existing alert log would
+    # otherwise keep working right up until the first write that mentions a new
+    # column. Applied idempotently on every open.
+    _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+        ("alerts", "face_path", "TEXT"),
+        ("evidence", "face_path", "TEXT"),
+    )
+
     def _init_schema(self) -> None:
         sql = _SCHEMA.read_text(encoding="utf-8")
         with self._write_lock:
             self.conn.executescript(sql)
+            for table, column, decl in self._MIGRATIONS:
+                cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                if cols and column not in cols:
+                    self.conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
             self.conn.commit()
 
     def close(self) -> None:
@@ -96,13 +110,13 @@ class Repository:
         with self._write_lock:
             self.conn.execute(
                 "INSERT OR REPLACE INTO evidence (evidence_id, alert_id, created_at,"
-                " keyframe_path, crop_path, clip_path, clip_start_ms, clip_end_ms,"
+                " keyframe_path, crop_path, face_path, clip_path, clip_start_ms, clip_end_ms,"
                 " detections_json, model_ids_json, geometry_json, homography_id,"
-                " config_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " config_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     e.evidence_id, alert.alert_id,
                     (e.created_at or datetime.now(timezone.utc)).isoformat(),
-                    e.keyframe_path, e.crop_path, e.clip_path,
+                    e.keyframe_path, e.crop_path, e.face_path, e.clip_path,
                     e.clip_start_ms, e.clip_end_ms,
                     json.dumps(e.detections, default=str),
                     json.dumps(e.model_ids, default=str),

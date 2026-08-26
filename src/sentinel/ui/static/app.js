@@ -357,6 +357,24 @@ function viewModel() {
       takeFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
     },
     runReference: () => start(null),
+    useDevice: async () => {
+      // A live device is a source like any other: the pipeline is retargeted
+      // and everything downstream behaves unchanged. It simply has no
+      // position to seek to, which the analysis page reflects.
+      try {
+        const r = await fetch("/api/source/device", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ index: 0 }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || "no capture device");
+        sessionStorage.setItem("sentinel.source", "live capture · device camera 0");
+        location.href = "/analysis";
+      } catch (err) {
+        alert("Could not start the device camera: " + err.message +
+              " — check that a camera is attached and is not in use by another application.");
+      }
+    },
     reset: () => {
       S.phase = "idle"; S.step = 0; S.logLines = []; S.selected = 0;
       S.evidence = null;

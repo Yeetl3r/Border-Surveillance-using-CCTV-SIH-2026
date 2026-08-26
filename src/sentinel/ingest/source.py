@@ -53,6 +53,14 @@ class OpenCVSource:
         self._src_fps = 0.0
         self.reconnects = 0
 
+        # Transport state. Only meaningful for a recorded source: a live camera
+        # has no position to seek to and no past to replay, so the controls are
+        # withheld rather than shown doing nothing.
+        self._paused = False
+        self._rate = 1.0
+        self._seek_to: int | None = None
+        self.total_frames = 0
+
     # -- lifecycle -----------------------------------------------------------
     def _resolve_source(self) -> str | int:
         src = self.cam.source
@@ -78,7 +86,52 @@ class OpenCVSource:
         except cv2.error:
             pass
         self._src_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         return cap
+
+    # -- transport (recorded sources only) -----------------------------------
+    @property
+    def is_live(self) -> bool:
+        """A live camera cannot be paused, scrubbed or replayed.
+
+        The distinction is exposed rather than inferred in the interface: a
+        transport bar over a live feed would be lying about what it can do.
+        """
+        return not self._is_file
+
+    def pause(self) -> None:
+        if self._is_file:
+            self._paused = True
+
+    def resume(self) -> None:
+        self._paused = False
+
+    def toggle(self) -> bool:
+        if self._is_file:
+            self._paused = not self._paused
+        return self._paused
+
+    def set_rate(self, rate: float) -> None:
+        if self._is_file:
+            self._rate = max(0.1, min(8.0, float(rate)))
+
+    def seek_fraction(self, frac: float) -> None:
+        if self._is_file and self.total_frames > 0:
+            f = int(max(0.0, min(1.0, float(frac))) * (self.total_frames - 1))
+            self._seek_to = f
+
+    def transport(self) -> dict:
+        return {
+            "live": self.is_live,
+            "paused": self._paused,
+            "rate": self._rate,
+            "frame": self._frame_idx,
+            "position": int(self._cap.get(cv2.CAP_PROP_POS_FRAMES)) if self._cap else 0,
+            "total_frames": self.total_frames,
+            "fps": self._src_fps,
+            "duration_s": round(self.total_frames / self._src_fps, 2)
+                          if self._src_fps > 0 and self.total_frames else 0.0,
+        }
 
     def close(self) -> None:
         self._stop = True
@@ -97,6 +150,22 @@ class OpenCVSource:
         next_due = time.perf_counter()
 
         while not self._stop:
+            # A requested seek is applied on the decode thread rather than from
+            # the request handler: VideoCapture is not safe to reposition while
+            # another thread is mid-read.
+            if self._seek_to is not None:
+                self._cap.set(cv2.CAP_PROP_POS_FRAMES, self._seek_to)
+                self._frame_idx = self._seek_to
+                self._seek_to = None
+                self.health.reset_reference()   # a jump is not a camera move
+                next_due = time.perf_counter()
+
+            if self._paused:
+                # Hold position without spinning. The pipeline keeps serving the
+                # last decoded frame, so the picture stays up while paused.
+                time.sleep(0.05)
+                continue
+
             ok, frame = self._cap.read()
 
             if not ok:
@@ -115,10 +184,11 @@ class OpenCVSource:
 
             self._frame_idx += 1
             if interval:
+                step = interval / max(0.1, self._rate)   # playback speed
                 now = time.perf_counter()
                 if next_due > now:
                     time.sleep(next_due - now)
-                next_due = max(next_due + interval, time.perf_counter() - interval)
+                next_due = max(next_due + step, time.perf_counter() - step)
 
             health = self.health.update(frame)
             view = enhance_for_operator(frame, self.enhance_cfg)

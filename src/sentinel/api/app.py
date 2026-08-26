@@ -353,6 +353,88 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
                 "path": str(dest.relative_to(Path(cfg.root_dir))),
                 "bytes": size}
 
+    @app.post("/api/playback/{camera_id}")
+    async def playback(camera_id: str, request: Request) -> dict:
+        """Transport control for a recorded source.
+
+        Refused on a live camera. There is no position to seek to and no past
+        to replay, and a transport bar that silently does nothing is worse than
+        no transport bar.
+        """
+        pipe = system.pipelines.get(camera_id)
+        if pipe is None or pipe.source is None:
+            raise HTTPException(404, f"unknown camera {camera_id}")
+        if pipe.source.is_live:
+            raise HTTPException(409, "live camera — playback control does not apply")
+
+        body = await request.json()
+        action = (body.get("action") or "").lower()
+        if action == "pause":
+            pipe.source.pause()
+        elif action == "play":
+            pipe.source.resume()
+        elif action == "toggle":
+            pipe.source.toggle()
+        elif action == "rate":
+            pipe.source.set_rate(float(body.get("value", 1.0)))
+        elif action == "seek":
+            pipe.source.seek_fraction(float(body.get("value", 0.0)))
+        elif action == "restart":
+            pipe.source.seek_fraction(0.0)
+            pipe.source.resume()
+        else:
+            raise HTTPException(400, f"unknown action {action!r}")
+        return pipe.source.transport()
+
+    @app.post("/api/source/device")
+    async def use_device_camera(request: Request) -> dict:
+        """Retarget a camera at a locally attached capture device.
+
+        The index is an OpenCV device index, so 0 is the built-in camera on
+        most laptops. Nothing about the pipeline changes: the device becomes an
+        ordinary source, and everything downstream — geometry, confirmation,
+        identity, evidence — behaves exactly as it does for a file.
+        """
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:                                  # noqa: BLE001
+            pass
+        index = int(body.get("index", 0))
+
+        probe = cv2.VideoCapture(index)
+        ok = probe.isOpened()
+        if ok:
+            ok, _ = probe.read()
+        probe.release()
+        if not ok:
+            raise HTTPException(
+                400, f"no capture device at index {index}, or it is in use by "
+                     f"another application")
+
+        camera_id = next(iter(system.pipelines), None)
+        if camera_id is None:
+            raise HTTPException(503, "no camera pipeline to retarget")
+
+        pipe = system.pipelines[camera_id]
+        pipe.stop()
+        await asyncio.sleep(0.4)
+
+        pipe.cam.source = str(index)
+        pipe.cam.loop = False
+        # A live device has no ground calibration, so metric claims are not
+        # available and the geometry falls back to pixel space -- flagged as
+        # degraded rather than presented as metres.
+        pipe._stop.clear()
+        pipe.q_decode._closed = False
+        pipe.tracker.reset()
+        pipe.spatial.reset()
+        pipe.temporal.reset()
+        pipe.frames_in = pipe.frames_processed = 0
+        pipe.start()
+
+        return {"ok": True, "camera_id": camera_id, "device_index": index, "live": True}
+
     # -- evidence ------------------------------------------------------------
     @app.get("/evidence/{path:path}")
     async def evidence(path: str):

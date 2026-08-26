@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     evidence_id       TEXT,
     keyframe_path     TEXT,
     crop_path         TEXT,
+    face_path         TEXT,
     clip_path         TEXT
 );
 
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     created_at        TEXT NOT NULL,
     keyframe_path     TEXT,
     crop_path         TEXT,
+    face_path         TEXT,
     clip_path         TEXT,
     clip_start_ms     INTEGER DEFAULT 0,
     clip_end_ms       INTEGER DEFAULT 0,

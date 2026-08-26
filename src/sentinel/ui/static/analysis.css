@@ -292,3 +292,64 @@ main {
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ── transport (recorded sources only) ─────────────────────────────────── */
+.transport {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 18px; border: 1px solid var(--line);
+  border-radius: 14px; background: var(--card);
+}
+.transport button {
+  background: rgba(255,255,255,.05); border: 1px solid var(--line);
+  color: var(--ink); border-radius: 10px; cursor: pointer;
+  width: 38px; height: 34px; font-size: 13px; line-height: 1;
+}
+.transport button:hover { border-color: rgba(255,255,255,.4); }
+.transport input[type=range] {
+  flex: 1 1 auto; appearance: none; height: 4px; border-radius: 3px;
+  background: rgba(255,255,255,.14); outline: none; cursor: pointer;
+}
+.transport input[type=range]::-webkit-slider-thumb {
+  appearance: none; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px rgba(255,31,60,.7); cursor: pointer;
+}
+.tp-time {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.tp-rates { display: flex; gap: 4px; }
+.tp-rates button {
+  width: auto; padding: 0 10px; height: 28px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+  color: var(--ink-3);
+}
+.tp-rates button.on { color: #fff; background: rgba(255,31,60,.22); border-color: var(--accent); }
+
+/* A live feed says so plainly instead of showing controls that cannot work. */
+.livebadge {
+  display: flex; align-items: center; gap: 11px;
+  padding: 12px 18px; border: 1px solid rgba(255,31,60,.34);
+  border-radius: 14px; background: rgba(255,31,60,.07);
+  font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-2);
+}
+.livebadge .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 12px var(--accent); animation: breathe 1.8s ease-in-out infinite;
+}
+
+.devicerow {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 16px; margin-bottom: 16px;
+  border: 1px dashed var(--line); border-radius: 14px;
+}
+.devicerow button {
+  border: 1px solid var(--accent); background: rgba(255,31,60,.12);
+  color: var(--ink); border-radius: 100px; padding: 10px 18px; cursor: pointer;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; white-space: nowrap;
+}
+.devicerow button:hover { background: rgba(255,31,60,.22); }
+.devicerow span { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
+
+/* three evidence tiles now: keyframe, subject, face */
+.shots { grid-template-columns: 1.5fr 1fr 1fr; }
+@media (max-width: 1080px) { .shots { grid-template-columns: 1fr 1fr; } }

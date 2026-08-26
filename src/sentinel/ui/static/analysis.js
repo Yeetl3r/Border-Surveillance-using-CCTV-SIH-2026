@@ -385,6 +385,10 @@ function renderEvidence() {
   };
   add("KEYFRAME · UNANNOTATED, AS THE DETECTOR SAW IT", d.keyframe_path, "alert keyframe");
   add("SUBJECT CROP", d.crop_path, "subject crop");
+  // Only meaningful for a person, and only when a face was actually visible.
+  // A subject facing away has no face to show, and the tile says so rather
+  // than being filled with a guess.
+  add("IDENTIFIED PERSON · FACE", d.face_path, "face of the subject");
   box.appendChild(shots);
 
   if (d.clip_path) {
@@ -517,6 +521,90 @@ function switchTab(name) {
   $("#pane-ask").hidden = name !== "ask";
 }
 
+/* ══════════════ transport ══════════════ */
+const fmt = (sec) => {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60), r = Math.floor(sec % 60);
+  return `${m}:${String(r).padStart(2, "0")}`;
+};
+
+let seekHeld = false;
+
+async function transport(action, value) {
+  if (!S.cameraId) return;
+  try {
+    const r = await fetch(`/api/playback/${S.cameraId}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, value }),
+    });
+    if (r.ok) applyTransport(await r.json());
+  } catch (_) { /* transient */ }
+}
+
+function applyTransport(t) {
+  if (!t) return;
+  S.transport = t;
+  const bar = $("#transport"), live = $("#livebadge");
+
+  // A live camera has no position to seek to and no past to replay, so the
+  // controls are withheld entirely rather than shown doing nothing.
+  bar.hidden = !!t.live;
+  live.hidden = !t.live;
+  if (t.live) return;
+
+  $("#tp-play").textContent = t.paused ? "▶" : "❚❚";
+  const fps = t.fps || 25;
+  const pos = (t.position || 0) / fps;
+  const dur = t.duration_s || (t.total_frames || 0) / fps;
+  $("#tp-time").textContent = `${fmt(pos)} / ${fmt(dur)}`;
+  if (!seekHeld && t.total_frames > 0) {
+    $("#tp-seek").value = Math.round(((t.position || 0) / t.total_frames) * 1000);
+  }
+  document.querySelectorAll("#tp-rates button").forEach((b) =>
+    b.classList.toggle("on", Math.abs(parseFloat(b.dataset.rate) - (t.rate || 1)) < 1e-6));
+}
+
+function initTransport() {
+  $("#tp-play").onclick = () => transport("toggle");
+  $("#tp-restart").onclick = () => transport("restart");
+
+  const seek = $("#tp-seek");
+  seek.addEventListener("input", () => { seekHeld = true; });
+  seek.addEventListener("change", () => {
+    seekHeld = false;
+    transport("seek", Number(seek.value) / 1000);
+  });
+
+  document.querySelectorAll("#tp-rates button").forEach((b) =>
+    (b.onclick = () => transport("rate", parseFloat(b.dataset.rate))));
+
+  $("#use-device").onclick = async () => {
+    const btn = $("#use-device");
+    btn.disabled = true;
+    btn.textContent = "STARTING CAMERA…";
+    try {
+      const r = await fetch("/api/source/device", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ index: 0 }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || "no capture device");
+      S.sourceLabel = "live capture · device camera 0";
+      sessionStorage.setItem("sentinel.source", S.sourceLabel);
+      $("#src-label").textContent = S.sourceLabel;
+      // The pipeline was restarted; re-bind the streams so the MJPEG
+      // connections attach to the new source rather than the closed one.
+      setTimeout(() => { bindStreams(); switchTab("alerts"); }, 900);
+      btn.textContent = "LIVE CAMERA RUNNING";
+    } catch (e) {
+      btn.textContent = "CAMERA UNAVAILABLE";
+      btn.title = String(e.message);
+    } finally {
+      setTimeout(() => { btn.disabled = false; }, 1500);
+    }
+  };
+}
+
 /* ══════════════ socket ══════════════ */
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -558,8 +646,19 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll(".chips button").forEach((b) =>
     (b.onclick = () => { $("#ask-input").value = b.textContent; ask(b.textContent); }));
 
+  initTransport();
   connect();
   warmUp();
+  // Transport state comes from the source itself, so it stays correct when the
+  // clip loops or the source is swapped underneath.
+  setInterval(async () => {
+    if (!S.ready || !S.cameraId) return;
+    try {
+      const st = await (await fetch("/api/status")).json();
+      const cam = (st.cameras || [])[0];
+      if (cam && cam.transport) applyTransport(cam.transport);
+    } catch (_) { /* transient */ }
+  }, 900);
   window.addEventListener("resize", draw);
   setInterval(() => { if (S.ready) draw(); }, 120);
 });

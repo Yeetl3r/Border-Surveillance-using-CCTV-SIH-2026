@@ -89,6 +89,7 @@ class EvidenceRef:
     evidence_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     keyframe_path: str = ""
     crop_path: str = ""
+    face_path: str = ""          # head-and-shoulders cut, when a face was found
     clip_path: str = ""
     clip_start_ms: int = 0
     clip_end_ms: int = 0
@@ -162,5 +163,6 @@ class Alert:
             "evidence_id": self.evidence.evidence_id,
             "keyframe_path": self.evidence.keyframe_path,
             "crop_path": self.evidence.crop_path,
+            "face_path": self.evidence.face_path,
             "clip_path": self.evidence.clip_path,
         }
