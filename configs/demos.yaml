@@ -57,11 +57,26 @@ demos:
         # This panel exists to show restraint, so the aerial detector does not
         # run on it. Its output here would be a claim the demo is arguing
         # against.
-        suppress: [aerial, weapons]
+        # Pose too. The crawling-human check asks whether a wide, low subject
+        # resolves a human skeleton -- a bird with its wings out is exactly
+        # that shape, and the check was reclassifying one of the two birds as a
+        # person on this footage. It answers a question this demo is not
+        # asking, and answering it wrongly cost the panel a box.
+        suppress: [aerial, weapons, pose]
+        detector:
+          # Two birds against bright overcast at long range are close to the
+          # smallest thing this model resolves, and it loses them whenever they
+          # cross a bright cloud edge. The floor is dropped for this footage the
+          # way it is for the crawling subject; only_group below keeps the
+          # cloud texture the lower floor also finds out of the picture.
+          conf: 0.08
         present:
           only_group: animal
           box_label: "AERIAL ANIMAL"
           box_threat: INFO
+          # The birds never leave frame, so the gaps are detector dropouts
+          # rather than the subject going away. Hold the last box across them.
+          coast_frames: 120
       - camera: demo_b
         label: ARMED DRONE
         source: assets/demo/drone_hexacopter.mp4

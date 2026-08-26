@@ -190,7 +190,7 @@ class CameraPipeline:
                                      bundle.frame_idx, bundle.captured_at)
         self.perf.track.append(time.perf_counter() - t0)
 
-        if self.pose is not None:
+        if self.pose is not None and "pose" not in self.suppress:
             # Order matters: settle WHAT the subject is before asking what
             # posture it is in. Stance on a misclassified animal is meaningless.
             self.pose.disambiguate(tracks, bundle.raw)
