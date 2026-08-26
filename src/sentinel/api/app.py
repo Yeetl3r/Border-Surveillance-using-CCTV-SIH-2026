@@ -521,8 +521,10 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
         """The scripted demos, as configured. Read from configs/demos.yaml."""
         return {"demos": [
             {"id": d.id, "title": d.title, "claim": d.claim, "note": d.note.strip(),
+             "extras": list(d.extras),
              "panels": [{"camera": p.camera, "label": p.label,
-                         "source": p.source, "live": p.source.startswith("device:")}
+                         "source": p.source, "live": p.source.startswith("device:"),
+                         "present": dict(p.present)}
                         for p in d.panels]}
             for d in cfg.demos]}
 
@@ -571,13 +573,32 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
             # decoded frame already runs at the right threshold.
             pipe.cam.detector_overrides = dict(panel.detector)
             pipe._det_conf = panel.detector.get("conf")
+            pipe.suppress = frozenset(panel.suppress)
+
+            # The specialised detectors are shared across cameras -- one set of
+            # weights, one config -- so a per-panel override is applied to that
+            # shared config here. Within a demo that is unambiguous, because a
+            # panel wanting different aerial settings from its sibling is a
+            # panel whose sibling suppresses aerial entirely. Two panels both
+            # running aerial with different ceilings would need per-camera
+            # detector instances, and no demo asks for that.
+            if system.threat is not None:
+                if panel.aerial and system.threat.aerial is not None:
+                    system.threat.aerial.cfg = (
+                        system.threat.aerial.cfg.model_copy(update=panel.aerial))
+                if panel.weapons and system.threat.weapons is not None:
+                    system.threat.weapons.cfg = (
+                        system.threat.weapons.cfg.model_copy(update=panel.weapons))
+
             await _retarget(pipe, panel.source)
             panels.append({"camera": panel.camera, "label": panel.label,
                            "source": panel.source,
-                           "live": panel.source.startswith("device:")})
+                           "live": panel.source.startswith("device:"),
+                           "present": dict(panel.present)})
 
         return {"ok": True, "demo": demo_id, "title": demo.title,
-                "claim": demo.claim, "note": demo.note.strip(), "panels": panels}
+                "claim": demo.claim, "note": demo.note.strip(),
+                "extras": list(demo.extras), "panels": panels}
 
     # -- evidence ------------------------------------------------------------
     @app.get("/evidence/{path:path}")

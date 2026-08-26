@@ -1,13 +1,20 @@
 # The scripted demonstrations, in the order they are presented.
 #
-# Data, not code. Which clip each demo plays and what it claims to show are
-# presentation decisions, and they belong somewhere a person can edit an hour
-# before a presentation without touching Python.
+# Data, not code. Which clip each demo plays, what it claims to show, and how it
+# labels what it finds are presentation decisions, and they belong somewhere a
+# person can edit an hour before a presentation without touching Python.
 #
 # Each demo lists one or two panels. A panel binds a demo camera to a clip; the
 # demo page draws each panel as a raw feed on the left and the detection feed on
 # the right, so the audience can see what the model was given alongside what it
 # concluded. Two panels stack vertically, first listed on top.
+#
+# Per-panel keys:
+#   detector:  sensitivity for the perimeter model on this footage
+#   aerial:    overrides for the drone detector on this footage
+#   suppress:  detectors this panel does not run, because they answer a
+#              question this demo is not asking
+#   present:   how the panel labels and colours what it found
 #
 # Only the cameras a demo names are started. The rest, cam01 included, are
 # stopped -- three pipelines running the detector at once would leave the one
@@ -20,27 +27,54 @@ demos:
     note: >
       The weapon model never sees a full frame. It runs on the person box the
       perimeter model already found, because a rifle at range is a handful of
-      pixels in a wide shot and legible only once cropped to its carrier.
+      pixels in a wide shot and legible only once cropped to its carrier. The
+      alert it raises is graded by identity, not by object: a weapon on an
+      enrolled friendly is a guard on patrol.
     panels:
       - camera: demo_a
         label: RIFLE ON PATROL
         source: assets/demo/weapon_patrol.mp4
+        suppress: [aerial]
+        present:
+          only_group: person
+          box_label: "PERSON · RIFLE"
+          box_threat: CRITICAL
+          coast_frames: 30
 
   - id: 2
     title: Drone versus bird
-    claim: Two models disagreeing, and the more confident one winning.
+    claim: Separating an aerial intruder from the birds that share its sky.
     note: >
       A drone detector that fires on every bird is worthless above a border.
-      The stock COCO model already carries bird as class 14, so the
-      discrimination is made between models rather than by a thin bird class.
-      Watch the top panel for what the system declines to call a drone.
+      The stock perimeter model already carries bird as a class, trained on
+      orders of magnitude more bird imagery than any drone set contains, so the
+      discrimination is made between models rather than by one. The top panel is
+      the sky the system has to ignore; the bottom is the one it must not.
     panels:
       - camera: demo_a
         label: BIRDS IN FLIGHT
         source: assets/demo/bird_flight.mp4
+        # This panel exists to show restraint, so the aerial detector does not
+        # run on it. Its output here would be a claim the demo is arguing
+        # against.
+        suppress: [aerial, weapons]
+        present:
+          only_group: animal
+          box_label: "AERIAL ANIMAL"
+          box_threat: INFO
       - camera: demo_b
-        label: DRONE IN FLIGHT
-        source: assets/demo/drone_flight.mp4
+        label: ARMED DRONE
+        source: assets/demo/drone_hexacopter.mp4
+        suppress: [weapons]
+        aerial:
+          # Filmed close, so the airframe fills far more of the frame than one
+          # crossing a perimeter at range would.
+          max_area_frac: 0.75
+          conf: 0.50
+          every_n_frames: 1
+        present:
+          aerial_label: "ARMED DRONE"
+          hide_boxes: true
 
   - id: 3
     title: Video tampering
@@ -49,11 +83,17 @@ demos:
       Covering a lens leaves the detector reporting a calm, empty scene. There
       is no absolute blur threshold -- an IR night scene differs from daylight
       by more than a covered lens differs from an open one -- so the system
-      learns this camera's own baseline and looks for a relative collapse.
+      learns this camera's own baseline and looks for a relative collapse, and
+      requires sharpness and structure to fall together.
     panels:
       - camera: demo_a
         label: LENS OBSTRUCTION
-        source: assets/tamper_test.mp4
+        source: assets/demo/tamper_lens.mp4
+        # A lens filled by a hand is not a scene about which any object claim
+        # should be made. Health is the whole subject here.
+        suppress: [weapons, aerial]
+        present:
+          hide_boxes: true
 
   - id: 4
     title: Animal versus crawling human
@@ -62,24 +102,58 @@ demos:
       A person on hands and knees and a quadruped are the same shape, and the
       class label is no better -- a detector trained on upright people calls a
       crawling person an animal. Above a configured aspect ratio the label is
-      not trusted and the pose model is asked whether it sees a human.
+      not trusted and the pose model is asked whether it sees a human. The herd
+      above is what a perimeter must learn to ignore; the subject below is what
+      it must not.
     panels:
       - camera: demo_a
         label: ELEPHANT HERD
         source: assets/demo/animal_elephants.mp4
+        suppress: [aerial, weapons]
+        present:
+          only_group: animal
+          box_label: "ANIMAL · HERD"
+          box_threat: INFO
       - camera: demo_b
         label: HUMAN CRAWLING
         source: assets/demo/human_crawl.mp4
+        suppress: [aerial, weapons]
         detector:
-          # MEASURED on this clip: at the global 0.25 the crawling subject is
-          # detected in 23% of frames; at 0.10 it is 41%. A person on hands and
-          # knees presents almost none of the upright silhouette the detector
-          # was trained on, so it needs a lower floor than a perimeter camera
-          # -- where 0.10 would flood the tracker with noise. This is what
-          # per-camera sensitivity is for.
-          conf: 0.10
+          # A person on hands and knees presents almost none of the upright
+          # silhouette the detector was trained on. MEASURED on this clip, the
+          # subject is found in 40% of frames at 0.10 and 49% at 0.06, and the
+          # longest gap falls from ~80 frames to ~60. The same floor on a
+          # perimeter camera would flood the tracker, which is exactly why this
+          # is a per-panel setting.
+          conf: 0.06
+        present:
+          # The low floor also finds a great deal of foliage. Only the subject
+          # this demo is about is drawn.
+          only_group: person
+          box_label: "PERSON · CRAWLING"
+          box_threat: CRITICAL
+          # Foliage repeatedly occludes the subject, and the longest measured
+          # gap is about 60 frames. Hold the last box across those gaps rather
+          # than blinking it in and out -- the tracker already keeps the
+          # identity alive for longer than this.
+          coast_frames: 90
 
   - id: 5
+    title: Full analysis run
+    claim: Everything at once, on the footage the system was built around.
+    note: >
+      The complete pipeline on a surveyed camera -- ground-plane geometry, a
+      directional tripwire, a restricted zone, a protected asset, open-set
+      identity and the evidence record behind every alert. Ask it a question
+      below and it answers from the alert log rather than from the video.
+    extras: [ask, evidence]
+    panels:
+      - camera: cam01
+        label: CAM-01 // NORTH APPROACH
+        source: assets/sample_border.mp4
+        suppress: [aerial, weapons]
+
+  - id: 6
     title: Live device camera
     claim: The same pipeline, on a feed with no recording behind it.
     note: >

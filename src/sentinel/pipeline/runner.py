@@ -83,6 +83,8 @@ class CameraPipeline:
         # properties of the shared model, and varying them per camera would
         # mean a second set of weights.
         self._det_conf = cam.detector_overrides.get("conf")
+        #: Detectors this camera does not run. Set by the demo runner.
+        self.suppress: frozenset[str] = frozenset()
         self.zones = ZoneSet.from_camera(cam)
         self.tracker = ObjectTracker(cfg.tracker, cam.camera_id,
                                      self.detector.mapper, self.detector.class_names)
@@ -196,7 +198,7 @@ class CameraPipeline:
             # tracked long enough to become one).
             spatial_obs += self.threat.scan(
                 tracks, dets, bundle.raw, bundle.camera_id,
-                bundle.frame_idx, bundle.captured_at)
+                bundle.frame_idx, bundle.captured_at, self.suppress)
         self.identity.resolve(tracks, bundle.raw, bundle.frame_idx)
 
         # -- Tier 3 ----------------------------------------------------------

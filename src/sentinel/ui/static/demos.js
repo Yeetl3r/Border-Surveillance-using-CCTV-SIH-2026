@@ -37,6 +37,8 @@ const S = {
   overlays: {},        // camera_id -> latest overlay
   alerts: [],
   switching: false,
+  wantEvidence: false,
+  selected: null,
 };
 
 /* ══════════════ rail ══════════════ */
@@ -110,6 +112,7 @@ async function select(id) {
   $("#demo-note").textContent = res.note || "";
   $("#demo-claim").textContent = res.claim || res.title;
   buildPanels(res.panels);
+  applyExtras(res.extras || []);
 
   // Give the retargeted pipelines a moment to produce a first frame, so the
   // overlay lifts onto a picture rather than onto black.
@@ -183,7 +186,11 @@ function buildPanels(panels) {
     }, { once: true });
 
     S.panels.push({ camera: p.camera, label: p.label, live: p.live,
-                    img: detImg, canvas: cv, wrap });
+                    img: detImg, canvas: cv, wrap,
+                    present: p.present || {},
+                    // Last frame that carried boxes, and how long ago. Used to
+                    // hold a subject across an occlusion instead of blinking.
+                    coast: null, coastAge: 0 });
   });
 }
 
@@ -203,14 +210,34 @@ function drawPanel(panel) {
   ctx.clearRect(0, 0, w, h);
   if (!ov) return;
 
+  const pr = panel.present || {};
+
   // Mirror object-fit: contain, or the boxes drift off the subject.
   const nw = img.naturalWidth || 1280, nh = img.naturalHeight || 720;
   const scale = Math.min(w / nw, h / nh);
   const ox = (w - nw * scale) / 2, oy = (h - nh * scale) / 2;
   const X = (x) => ox + x * scale, Y = (y) => oy + y * scale;
 
-  for (const b of ov.boxes || []) {
-    const c = col(b.threat);
+  // Coasting. Some footage occludes its subject repeatedly -- foliage, a
+  // passing trunk -- and the detector drops out for a handful of frames each
+  // time. The tracker keeps the identity alive far longer than that, so
+  // holding the last box across the gap shows the subject the operator is
+  // actually following rather than a box that strobes.
+  let boxes = ov.boxes || [];
+  // A panel that runs the detector at a low floor to catch a difficult subject
+  // also catches a lot of foliage. Drawing only the group the demo is about
+  // keeps the noise out of a picture whose whole point is one subject.
+  if (pr.only_group) boxes = boxes.filter((b) => b.group === pr.only_group);
+  const coastMax = pr.coast_frames || 0;
+  if (coastMax) {
+    if (boxes.length) { panel.coast = boxes; panel.coastAge = 0; }
+    else if (panel.coast && panel.coastAge < coastMax) { boxes = panel.coast; panel.coastAge++; }
+    else { panel.coast = null; }
+  }
+  if (pr.hide_boxes) boxes = [];
+
+  for (const b of boxes) {
+    const c = col(pr.box_threat || b.threat);
     const band = bandOf(b.confidence);
     const [x1, y1, x2, y2] = b.bbox;
     const x = X(x1), y = Y(y1), bw = (x2 - x1) * scale, bh = (y2 - y1) * scale;
@@ -223,16 +250,22 @@ function drawPanel(panel) {
     ctx.strokeRect(x, y, bw, bh);
     ctx.restore();
 
-    const bits = [`#${b.track_id}`, (b.group || "").toUpperCase(),
-                  Number(b.confidence).toFixed(2)];
-    if (b.stance && !["UNKNOWN", "STANDING"].includes(b.stance)) bits.push(b.stance);
-    if (b.weapon) bits.push(b.weapon.toUpperCase());
-    if (b.reclassified) bits.push("HUMAN");
-    if (b.quadruped_note) bits.push("STANCE WITHHELD");
-    label(ctx, bits.join(" · "), x, y, c);
+    let text;
+    if (pr.box_label) {
+      text = `${pr.box_label} · ${Number(b.confidence).toFixed(2)}`;
+    } else {
+      const bits = [`#${b.track_id}`, (b.group || "").toUpperCase(),
+                    Number(b.confidence).toFixed(2)];
+      if (b.stance && !["UNKNOWN", "STANDING"].includes(b.stance)) bits.push(b.stance);
+      if (b.weapon) bits.push(b.weapon.toUpperCase());
+      if (b.reclassified) bits.push("HUMAN");
+      if (b.quadruped_note) bits.push("STANCE WITHHELD");
+      text = bits.join(" · ");
+    }
+    label(ctx, text, x, y, c);
   }
 
-  drawAerial(ctx, ov, X, Y, scale);
+  drawAerial(ctx, ov, X, Y, scale, pr, nw, nh);
 }
 
 function label(ctx, text, x, y, c, size) {
@@ -245,12 +278,18 @@ function label(ctx, text, x, y, c, size) {
   ctx.restore();
 }
 
-function drawAerial(ctx, ov, X, Y, scale) {
+function drawAerial(ctx, ov, X, Y, scale, pr, nw, nh) {
   const a = ov.aerial;
   if (!a) return;
 
   for (const d of a.drones || []) {
-    const [x1, y1, x2, y2] = d.bbox_px;
+    let [x1, y1, x2, y2] = d.bbox_px;
+    // Clamp to the frame. A box whose edge sits outside the image draws a
+    // reticle floating in the letterbox beside the picture, which reads as the
+    // system detecting something in the black bars.
+    x1 = Math.max(0, Math.min(x1, nw)); x2 = Math.max(0, Math.min(x2, nw));
+    y1 = Math.max(0, Math.min(y1, nh)); y2 = Math.max(0, Math.min(y2, nh));
+    if (x2 - x1 < 2 || y2 - y1 < 2) continue;
     const x = X(x1), y = Y(y1), bw = (x2 - x1) * scale, bh = (y2 - y1) * scale;
     ctx.save();
     ctx.strokeStyle = col("CRITICAL"); ctx.lineWidth = 2; ctx.setLineDash([]);
@@ -260,7 +299,8 @@ function drawAerial(ctx, ov, X, Y, scale) {
     ctx.moveTo(x + bw / 2, y + bh + 1); ctx.lineTo(x + bw / 2, y + bh + 7);
     ctx.stroke();
     ctx.restore();
-    label(ctx, `AERIAL · ${Number(d.conf).toFixed(2)}`, x, y, col("CRITICAL"));
+    label(ctx, `${pr.aerial_label || "AERIAL"} · ${Number(d.conf).toFixed(2)}`,
+          x, y, col("CRITICAL"));
   }
 
   // The refusals are the interesting half of this demo: a system that can show
@@ -284,6 +324,126 @@ function drawAerial(ctx, ov, X, Y, scale) {
   }
 }
 
+/* ══════════════ extras ══════════════ */
+function applyExtras(extras) {
+  const want = new Set(extras);
+  $("#pane-ask").hidden = !want.has("ask");
+  $("#pane-evidence").hidden = !want.has("evidence");
+  S.wantEvidence = want.has("evidence");
+  if (!want.has("evidence")) {
+    S.selected = null;
+    $("#evidence-body").textContent = "";
+    $("#evidence-body").append(el("p", "muted", "Select an alert above to see its evidence."));
+  }
+}
+
+async function ask(text) {
+  const out = $("#ask-out");
+  out.textContent = "";
+  out.append(el("div", "route", "routing…"));
+  $("#ask-btn").disabled = true;
+  try {
+    const cam = S.panels.length ? S.panels[0].camera : undefined;
+    const r = await fetch("/api/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: text, camera_id: cam }),
+    });
+    renderAnswer(await r.json());
+  } catch (e) {
+    out.textContent = "";
+    out.append(el("div", "errbox", "Query failed: " + e.message));
+  } finally {
+    $("#ask-btn").disabled = false;
+  }
+}
+
+function renderAnswer(d) {
+  const out = $("#ask-out");
+  out.textContent = "";
+  const route = el("div", "route");
+  route.append(el("span", null, "ROUTE · " + (d.route || "?").toUpperCase()));
+  if (d.backend) route.append(el("span", "lat", d.backend));
+  if (d.latency_ms != null) route.append(el("span", "lat", d.latency_ms + " ms"));
+  out.append(route);
+
+  if (d.ok === false) {
+    out.append(el("div", "errbox", d.error || "unavailable"));
+    if (d.fallback && d.fallback.answer) out.append(el("div", "answer", d.fallback.answer));
+    return;
+  }
+  if (d.answer) out.append(el("div", "answer", d.answer));
+  if (d.sql) out.append(el("div", "sqlbox", d.sql));
+  if (d.rows && d.rows.length && d.route === "structured") {
+    const t = el("table", "kv");
+    for (const r of d.rows.slice(0, 8)) {
+      const tr = el("tr");
+      tr.append(el("td", null, hhmmss(r.opened_at)));
+      tr.append(el("td", null,
+        `${r.threat} · ${r.kind} · ${Math.round(r.confidence * 100)}%`));
+      tr.style.cursor = "pointer";
+      tr.onclick = () => selectAlert(r.alert_id);
+      t.append(tr);
+    }
+    out.append(t);
+  }
+  if (d.rows && d.route === "identity") {
+    for (const r of d.rows) {
+      out.append(el("div", "sqlbox",
+        `#${r.track_id} ${r.class_name}: ${r.label}` +
+        (r.similarity != null ? ` (sim ${r.similarity}, thr ${r.threshold})` : "")));
+    }
+  }
+}
+
+async function selectAlert(id) {
+  if (!S.wantEvidence || !id) return;
+  S.selected = id;
+  const body = $("#evidence-body");
+  body.textContent = "";
+  body.append(el("p", "muted", "loading evidence…"));
+  let d;
+  try {
+    d = await (await fetch(`/api/alerts/${id}`)).json();
+  } catch (e) {
+    body.textContent = "";
+    body.append(el("div", "errbox", "Could not load evidence: " + e.message));
+    return;
+  }
+  body.textContent = "";
+
+  const h = el("h3", null, (d.kind || "").replace(/_/g, " ").toLowerCase()
+    .replace(/^./, (m) => m.toUpperCase()));
+  h.style.color = col(d.threat);
+  body.append(h);
+  if (d.rationale) body.append(el("p", "why", d.rationale));
+
+  // Real files from the evidence store, served from disk. The keyframe is the
+  // unannotated frame the detector saw; the crop is the subject cut from it.
+  const shots = el("div", "shots");
+  const add = (cap, path, alt) => {
+    const sh = el("div", "shot");
+    sh.append(el("div", "cap", cap));
+    const b = el("div", "box");
+    if (path) {
+      const im = el("img");
+      im.src = "/evidence/" + String(path).replace(/\\/g, "/");
+      im.alt = alt;
+      im.onerror = () => { b.classList.add("empty"); im.remove(); };
+      b.append(im);
+    } else {
+      b.classList.add("empty");
+    }
+    sh.append(b);
+    shots.append(sh);
+  };
+  add("KEYFRAME · UNANNOTATED, AS THE DETECTOR SAW IT", d.keyframe_path, "alert keyframe");
+  add("SUBJECT CROP", d.crop_path, "subject crop");
+  // Only meaningful for a person, and only when a face was actually visible.
+  add("IDENTIFIED PERSON · FACE", d.face_path, "face of the subject");
+  body.append(shots);
+}
+
 /* ══════════════ alerts ══════════════ */
 function paintAlerts() {
   const list = $("#alerts");
@@ -296,6 +456,10 @@ function paintAlerts() {
     li.append(el("span", "at", hhmmss(a.opened_at)));
     li.append(el("span", "kind", a.kind));
     li.append(el("span", "why", a.reason || a.camera_id || ""));
+    if (S.wantEvidence) {
+      li.style.cursor = "pointer";
+      li.onclick = () => selectAlert(a.alert_id);
+    }
     list.append(li);
   });
 }
@@ -349,6 +513,13 @@ window.addEventListener("DOMContentLoaded", async () => {
     S.demos = [];
   }
   renderRail();
+  $("#ask-form").onsubmit = (e) => {
+    e.preventDefault();
+    const v = $("#ask-input").value.trim();
+    if (v) ask(v);
+  };
+  document.querySelectorAll("#pane-ask .chips button").forEach((b) =>
+    (b.onclick = () => { $("#ask-input").value = b.textContent; ask(b.textContent); }));
   connect();
   loadAlerts();
 

@@ -114,3 +114,22 @@
   .panel .pair { grid-template-columns: 1fr; }
   .rail button { min-width: 120px; }
 }
+
+/* ── extras ────────────────────────────────────────────────────────────── */
+/* analysis.css lays the evidence tiles out for two; this page shows three --
+   keyframe, subject crop and face -- and the keyframe still deserves the
+   width, because it is the frame the claim was actually made on. */
+#pane-evidence .shots { grid-template-columns: 1.7fr 1fr 1fr; }
+#pane-evidence h3 { margin: 0 0 6px; font-size: 16px; letter-spacing: -.02em; }
+#pane-evidence .why { margin: 0 0 14px; font-size: 13px; color: var(--ink-2); }
+#pane-evidence .muted { margin: 0; font-size: 13px; color: var(--ink-3); }
+
+#pane-ask .ask { margin-top: 4px; }
+#pane-ask .ask-out { margin-top: 14px; }
+
+/* Alert rows are clickable only on the demo that shows evidence. */
+.alerts li[style*="pointer"]:hover { background: rgba(157,196,240,.06); }
+
+@media (max-width: 1000px) {
+  #pane-evidence .shots { grid-template-columns: 1fr; }
+}

@@ -67,6 +67,37 @@
         <ul id="alerts" class="alerts"></ul>
       </section>
 
+      <!-- Shown only for demos that declare them. Most demos isolate one
+           detector, and a query box beneath a bird clip is furniture. -->
+      <section class="beneath" id="pane-evidence" hidden>
+        <div class="alerts-head">
+          <span class="tag accent">EVIDENCE</span>
+          <span class="sub">what the selected alert was actually raised on</span>
+        </div>
+        <div id="evidence-body">
+          <p class="muted">Select an alert above to see its evidence.</p>
+        </div>
+      </section>
+
+      <section class="beneath" id="pane-ask" hidden>
+        <div class="alerts-head">
+          <span class="tag accent">ASK</span>
+          <span class="sub">answered from the alert log, not from the video</span>
+        </div>
+        <form class="ask" id="ask-form">
+          <input id="ask-input" autocomplete="off"
+                 placeholder="Ask about this footage — e.g. when was the last alert?">
+          <button type="submit" id="ask-btn">ASK</button>
+        </form>
+        <div class="chips">
+          <button type="button">when was the last alert?</button>
+          <button type="button">how many perimeter breaches today?</button>
+          <button type="button">show live alerts</button>
+          <button type="button">who is track #1?</button>
+        </div>
+        <div id="ask-out" class="ask-out"></div>
+      </section>
+
     </main>
 
     <script src="/static/demos.js"></script>

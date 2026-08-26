@@ -568,6 +568,18 @@ class DemoPanelCfg(BaseModel):
     label: str = ""
     source: str
     detector: dict[str, Any] = Field(default_factory=dict)
+    #: Per-panel overrides for the specialised detectors, same shape as the
+    #: `threat.aerial` / `threat.weapons` blocks in system.yaml. Aerial size and
+    #: confidence in particular are properties of the footage: a drone filmed
+    #: close fills far more of the frame than one crossing a perimeter.
+    aerial: dict[str, Any] = Field(default_factory=dict)
+    weapons: dict[str, Any] = Field(default_factory=dict)
+    #: Detectors this panel does not run. A demo isolates one capability, and
+    #: the others are noise against it -- the tamper clip is a hand filling the
+    #: lens, which is not a scene any weapon claim should be made about.
+    suppress: list[str] = Field(default_factory=list)
+    #: How this panel presents what it found. Rendering only.
+    present: dict[str, Any] = Field(default_factory=dict)
 
 
 class DemoCfg(BaseModel):
@@ -583,6 +595,10 @@ class DemoCfg(BaseModel):
     claim: str = ""
     note: str = ""
     panels: list[DemoPanelCfg] = Field(default_factory=list)
+    #: Extra surfaces this demo shows beneath its panels: "ask" for the natural
+    #: language query box, "evidence" for the keyframe / subject / face tiles.
+    #: Most demos isolate one detector and want neither.
+    extras: list[str] = Field(default_factory=list)
 
 
 class SystemCfg(BaseModel):

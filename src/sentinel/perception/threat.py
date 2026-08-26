@@ -296,10 +296,22 @@ class ThreatDetectors:
         return "+".join(ids)
 
     def scan(self, tracks: list[Track], dets: list[Detection], frame: np.ndarray,
-             camera_id: str, frame_idx: int, at: datetime) -> list[Observation]:
+             camera_id: str, frame_idx: int, at: datetime,
+             suppress: frozenset[str] = frozenset()) -> list[Observation]:
+        """Run the enabled detectors, minus any this camera suppresses.
+
+        Suppression is per camera rather than global because it answers a
+        question about the scene, not about the system: a lens filled by a hand
+        is not footage any weapon claim should be made about, and running the
+        detector there produces a confident answer to a question nobody asked.
+        """
         obs: list[Observation] = []
-        if self.weapons is not None:
+        if self.weapons is not None and "weapons" not in suppress:
             obs += self.weapons.scan(tracks, frame, camera_id, frame_idx, at)
-        if self.aerial is not None:
+        if self.aerial is not None and "aerial" not in suppress:
             obs += self.aerial.scan(dets, frame, camera_id, frame_idx, at)
+        elif self.aerial is not None:
+            # Clear the display lists, or a suppressed panel keeps drawing the
+            # boxes the last unsuppressed camera produced.
+            self.aerial.withheld, self.aerial.detections = [], []
         return obs
