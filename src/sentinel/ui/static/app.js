@@ -1,172 +1,510 @@
-/* SENTINEL C2 client.
+/* SENTINEL C2 — client.
  *
- * Two inbound channels: an MJPEG <img> for pixels, and a WebSocket for state.
- * Overlays are drawn here, from state -- never burned into the video. That is
- * what lets the evidence keyframe stay the unannotated input the decision was
- * made on, and what makes F12 a property of the display.
+ * The markup is the approved design canvas, carried over verbatim. The canvas
+ * shipped with mocked constants; this file replaces them with the live system:
+ * real telemetry over a WebSocket, real MJPEG frames, real alerts, and real
+ * evidence records pulled from the store.
  *
- * F12, the rule this file exists to implement:
- *     THREAT     -> stroke COLOUR
- *     CONFIDENCE -> stroke STYLE   (solid / dashed / hatched)
- * They are independent. A low-confidence CRITICAL is a red hatched box; a
- * high-confidence WATCH is a solid amber one. Collapsing them into one visual
- * variable would hide exactly the distinction the operator needs.
+ * Two rules the rendering obeys:
+ *
+ *   F12 — THREAT sets colour, CONFIDENCE sets stroke style. They are separate
+ *   fields and are never multiplied into one value. A low-confidence CRITICAL
+ *   is a red hatched box; a high-confidence WATCH is a solid amber one.
+ *
+ *   Overlays are drawn here, on a canvas above the video, never burned into
+ *   the stream. That keeps the evidence keyframe byte-identical to what the
+ *   detector actually received.
  */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   A very small template runtime for the canvas's directives:
+     {{ path }}         interpolation, in text and in attributes
+     data-if="path"     conditional display
+     <template data-for="list" data-as="item">
+     data-click / data-drop / data-dragover / data-dragleave / data-change
+     data-ref="name"    element handle
+   Compile once, patch on update — a full re-render of this document at 10 Hz
+   would be wasteful and would restart the CSS animations every frame.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const RX = /\{\{\s*([\w.$]+)\s*\}\}/g;
+
+function resolve(path, scopes) {
+  const parts = path.split(".");
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    let cur = scopes[i];
+    if (cur == null || !(parts[0] in cur)) continue;
+    for (const p of parts) {
+      if (cur == null) break;
+      cur = cur[p];
+    }
+    return cur;
+  }
+  return undefined;
+}
+
+function fill(tpl, scopes) {
+  return tpl.replace(RX, (_, p) => {
+    const v = resolve(p, scopes);
+    return v === undefined || v === null ? "" : String(v);
+  });
+}
+
+class Binder {
+  constructor(root) {
+    this.texts = [];
+    this.attrs = [];
+    this.ifs = [];
+    this.loops = [];
+    this.refs = {};
+    this.handlers = {};
+    this.scope = null;
+    this.compile(root);
+  }
+
+  compile(root) {
+    // Loops first: detach each <template data-for> and leave an anchor, so the
+    // walker below never descends into an un-instantiated body.
+    root.querySelectorAll("template[data-for]").forEach((tpl) => {
+      const anchor = document.createComment("for:" + tpl.dataset.for);
+      tpl.parentNode.insertBefore(anchor, tpl);
+      tpl.remove();
+      this.loops.push({
+        anchor,
+        list: tpl.dataset.for,
+        as: tpl.dataset.as || "item",
+        html: tpl.innerHTML,
+        instances: [],
+      });
+    });
+
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    const els = [];
+    let n = walk.currentNode;
+    while (n) {
+      if (n.nodeType === Node.TEXT_NODE) {
+        if (n.nodeValue.includes("{{")) this.texts.push({ node: n, tpl: n.nodeValue });
+      } else {
+        els.push(n);
+      }
+      n = walk.nextNode();
+    }
+
+    for (const el of els) {
+      if (el.dataset && el.dataset.ref) this.refs[el.dataset.ref] = el;
+      if (el.dataset && el.dataset.if !== undefined) {
+        this.ifs.push({ el, expr: el.dataset.if });
+      }
+      for (const a of Array.from(el.attributes || [])) {
+        if (a.value.includes("{{")) {
+          this.attrs.push({ el, name: a.name, tpl: a.value });
+        }
+      }
+      // events
+      const map = {
+        click: "click", drop: "drop", dragover: "dragover",
+        dragleave: "dragleave", change: "change",
+      };
+      for (const [dsKey, evt] of Object.entries(map)) {
+        const fn = el.dataset && el.dataset[dsKey];
+        if (fn) {
+          el.addEventListener(evt, (e) => {
+            // Handler names are paths, not plain keys: a loop body binds
+            // `a.select`, the page level binds `pickFile`. Resolving against
+            // the live scope covers both without special-casing either.
+            const h = resolve(fn, [this.scope || {}]) ?? this.handlers[fn];
+            if (typeof h === "function") h(e);
+          });
+          if (evt === "click") el.style.cursor = el.style.cursor || "pointer";
+        }
+      }
+      if (el.dataset && el.dataset.bindSrc) {
+        this.attrs.push({ el, name: "src", tpl: "{{ " + el.dataset.bindSrc + " }}" });
+      }
+    }
+  }
+
+  update(state) {
+    this.scope = state;
+    const scopes = [state];
+
+    for (const t of this.texts) {
+      const v = fill(t.tpl, scopes);
+      if (t.node.nodeValue !== v) t.node.nodeValue = v;
+    }
+    for (const a of this.attrs) {
+      const v = fill(a.tpl, scopes);
+      if (a.name === "src" && !v) continue;
+      if (a.el.getAttribute(a.name) !== v) a.el.setAttribute(a.name, v);
+    }
+    for (const c of this.ifs) {
+      const on = !!resolve(c.expr, scopes);
+      c.el.style.display = on ? "contents" : "none";
+    }
+    for (const lp of this.loops) {
+      const items = resolve(lp.list, scopes) || [];
+      this.renderLoop(lp, items, state);
+    }
+  }
+
+  renderLoop(lp, items, state) {
+    // Reuse instances where the count matches; rebuild when it changes.
+    if (lp.instances.length !== items.length) {
+      lp.instances.forEach((inst) => inst.nodes.forEach((n) => n.remove()));
+      lp.instances = items.map(() => {
+        const frag = document.createElement("div");
+        frag.innerHTML = lp.html;
+        const nodes = Array.from(frag.childNodes);
+        const holder = document.createElement("div");
+        holder.style.display = "contents";
+        nodes.forEach((n) => holder.appendChild(n));
+        lp.anchor.parentNode.insertBefore(holder, lp.anchor);
+        return { holder, nodes: [holder], binder: new Binder(holder) };
+      });
+    }
+    items.forEach((item, i) => {
+      const inst = lp.instances[i];
+      const scoped = Object.assign(Object.create(state), { [lp.as]: item });
+      inst.binder.handlers = this.handlers;
+      inst.binder.update(scoped);
+    });
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Live state
+   ══════════════════════════════════════════════════════════════════════════ */
 
 const THREAT_COLOUR = {
   INFO: "#5aa9e6",
-  FRIENDLY: "#3ddc84",
-  WATCH: "#ffc23d",
-  WARNING: "#ff8c1a",
-  CRITICAL: "#ff3344",
+  FRIENDLY: "#2fd98a",
+  WATCH: "#ffc21a",
+  WARNING: "#ff7a1a",
+  CRITICAL: "#ff2b3d",
+};
+const THREAT_BG = {
+  INFO: "rgba(90,169,230,.09)",
+  FRIENDLY: "rgba(47,217,138,.09)",
+  WATCH: "rgba(255,194,26,.09)",
+  WARNING: "rgba(255,122,26,.09)",
+  CRITICAL: "rgba(255,43,61,.10)",
 };
 
-const state = {
+const S = {
+  phase: "idle",           // idle | running | done
+  fileName: "",
+  videoUrl: "",
+  sourceLabel: "REFERENCE IR CLIP",
   cameraId: null,
-  zones: {},
-  overlay: null,
-  alerts: [],
-  selected: null,
-  tab: "live",
   status: {},
-  routes: {},
+  overlay: null,
+  zones: null,
+  liveAlerts: [],
+  historyCount: 0,
+  selected: 0,
+  evidence: null,
+  logLines: [],
+  step: 0,
+  startedAt: 0,
 };
 
-/* ---------------------------------------------------------------- helpers */
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined) n.textContent = text;
-  return n;
-};
+const TIER_DEFS = [
+  { id: "T0", name: "Ingestion & health", note: "decode · Laplacian + SSIM · H" },
+  { id: "T1", name: "Perception", note: "YOLO26-s NMS-free · BoT-SORT" },
+  { id: "T2", name: "Spatial reasoning", note: "footpoint → metres · tripwire · zones" },
+  { id: "T3", name: "Temporal confirmation", note: "N-of-M in seconds and hit ratio" },
+  { id: "T5", name: "Identity, open-set", note: "quality gate · OSNet · gallery" },
+  { id: "T8", name: "Alert manager", note: "sole alert constructor · evidence" },
+];
+
+let binder = null;
+let ws = null;
+
+/* ── helpers ───────────────────────────────────────────────────────────── */
+const pad = (n) => String(n).padStart(2, "0");
+function stamp() {
+  const ms = Date.now() - (S.startedAt || Date.now());
+  const s = Math.floor(ms / 1000);
+  return `${pad(Math.floor(s / 60))}:${pad(s % 60)}.${pad(Math.floor((ms % 1000) / 10))}`;
+}
+function log(text) {
+  S.logLines.push({ t: stamp(), text });
+  if (S.logLines.length > 40) S.logLines.shift();
+  S.step = S.logLines.length;
+}
 const hhmmss = (iso) => (iso ? new Date(iso).toISOString().substr(11, 8) : "--:--:--");
 
-function bandStyle(ctx, band) {
-  // The style axis. Dash patterns are chosen to stay legible when a box is
-  // only ~30 px tall, which is normal for a distant subject.
-  if (band === "HIGH") { ctx.setLineDash([]); ctx.lineWidth = 2.2; ctx.globalAlpha = 1; }
-  else if (band === "MEDIUM") { ctx.setLineDash([7, 4]); ctx.lineWidth = 2; ctx.globalAlpha = 0.92; }
-  else { ctx.setLineDash([2, 4]); ctx.lineWidth = 1.6; ctx.globalAlpha = 0.78; }
+/* ── the view model the template binds against ─────────────────────────── */
+function viewModel() {
+  const st = S.status || {};
+  const cam = (st.cameras || [])[0] || {};
+  const perf = cam.perf || {};
+  const ov = S.overlay || {};
+  const health = (ov.health && ov.health.state) || cam.health || "--";
+
+  const perTier = Math.max(1, 14 / TIER_DEFS.length);
+  const tiers = TIER_DEFS.map((t, i) => {
+    const done = S.phase === "done" || S.step >= (i + 1) * perTier;
+    const active = !done && S.step >= i * perTier;
+    return {
+      key: t.id,
+      name: t.id + " · " + t.name,
+      note: t.note,
+      status: done ? "DONE" : active ? "RUNNING" : "QUEUED",
+      dot: done ? "#2fd98a" : active ? "#ff1f3c" : "rgba(255,255,255,.16)",
+      glow: active ? "0 0 12px rgba(255,31,60,.9)"
+           : done ? "0 0 10px rgba(47,217,138,.6)" : "none",
+      fg: done ? "rgba(242,236,235,.85)"
+        : active ? "#ff8f9a" : "rgba(242,236,235,.35)",
+    };
+  });
+
+  const alerts = S.liveAlerts.map((a, i) => ({
+    key: a.alert_id,
+    id: a.alert_id,
+    kind: (a.kind || "").replace(/_/g, " ").toLowerCase()
+            .replace(/^./, (c) => c.toUpperCase()),
+    threat: a.threat,
+    band: a.confidence_band,
+    conf: Number(a.confidence || 0).toFixed(2),
+    cam: a.camera_id,
+    time: hhmmss(a.opened_at),
+    color: THREAT_COLOUR[a.threat] || THREAT_COLOUR.INFO,
+    bg: THREAT_BG[a.threat] || THREAT_BG.INFO,
+    lineStyle: a.confidence_band === "HIGH" ? "solid"
+             : a.confidence_band === "MEDIUM" ? "dashed" : "dotted",
+    hatched: a.confidence_band === "LOW",
+    rationale: a.rationale || "",
+    select: () => { S.selected = i; loadEvidence(a.alert_id); paint(); },
+  }));
+
+  const ev = S.evidence || {};
+  const cfg = ev.config_snapshot || {};
+  const sel = alerts[S.selected] || alerts[0] || {};
+  const selFull = Object.assign({}, sel, {
+    state: ev.state || "—",
+    clip: ev.clip_path ? "H.264 · run-up retained" : "—",
+    detections: ev.detections
+      ? `${ev.detections.length} detection${ev.detections.length === 1 ? "" : "s"} · `
+        + ev.detections.map((d) => Number(d.confidence).toFixed(2)).join(" / ")
+      : "—",
+    confirm: cfg.confirm
+      ? `${cfg.confirm.min_hits} of window ${cfg.confirm.window_s}s · ratio ${cfg.confirm.min_ratio}`
+      : "—",
+    geometry: ev.geometry
+      ? [ev.geometry.zone_label, ev.geometry.direction,
+         ev.geometry.distance_m != null ? ev.geometry.distance_m + " m" : null]
+        .filter(Boolean).join(" · ")
+      : "—",
+    homography: ev.homography_id
+      ? `${ev.homography_id} · residual ${(cam.homography || {}).residual_m ?? "—"} m`
+      : "uncalibrated · pixel space",
+    identity: (() => {
+      const d = (ev.detections || []).find((x) => x.identity);
+      if (!d) return "—";
+      const id = d.identity;
+      return id.label === "FRIENDLY"
+        ? `FRIENDLY · ${id.matched} · ${id.similarity} > ${id.threshold}`
+        : `${id.label} · best ${id.similarity ?? "—"} vs ${id.threshold}`;
+    })(),
+    discounts: (sel.rationale || "").includes("|")
+      ? sel.rationale.split("|").slice(2).join(" · ").trim() || "none applied"
+      : "none applied",
+    models: ev.model_ids
+      ? Object.entries(ev.model_ids).map(([k, v]) => `${k} ${v}`).join(" · ")
+      : "—",
+  });
+
+  const idcfg = st.identity || {};
+  const prof = st.profile || "demo";
+
+  return {
+    // phase
+    isIdle: S.phase === "idle",
+    isRunning: S.phase === "running",
+    isDone: S.phase === "done",
+    hasVideo: !!S.videoUrl,
+    noVideo: !S.videoUrl,
+    videoUrl: S.videoUrl,
+    fileName: S.fileName,
+    sourceLabel: S.sourceLabel,
+
+    // progress
+    progressPct: Math.min(100, Math.round((S.step / 14) * 100)) + "%",
+    stageLabel: S.phase === "done" ? "ALERTS PROMOTED"
+      : "TIER " + Math.min(9, Math.floor(S.step / 1.6)) + " · PROCESSING",
+    logs: S.logLines.slice(-6).map((l, i) => ({ key: l.t + i, t: l.t, text: l.text })),
+    tiers,
+
+    // live
+    alerts,
+    sel: selFull,
+
+    // config, read from the running system rather than hardcoded
+    profileName: String(prof).toUpperCase() === "OPERATIONAL" ? "OPERATIONAL" : "DEMONSTRATION",
+    cfgWindow: (cfg.confirm && cfg.confirm.window_s) ?? (prof === "operational" ? "3.0" : "1.2"),
+    cfgRatio: (cfg.confirm && cfg.confirm.min_ratio) ?? (prof === "operational" ? "0.7" : "0.6"),
+    cfgDwell: (cfg.baggage && cfg.baggage.dwell_s) ?? (prof === "operational" ? "120" : "15"),
+    simThreshold: idcfg.threshold ?? "0.666",
+
+    // handlers
+    pickFile: () => binder.refs.fileRef && binder.refs.fileRef.click(),
+    onFileChange: (e) => takeFile(e.target.files && e.target.files[0]),
+    onDragOver: (e) => e.preventDefault(),
+    onDragLeave: (e) => e.preventDefault(),
+    onDrop: (e) => {
+      e.preventDefault();
+      takeFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+    },
+    runReference: () => start(null),
+    reset: () => {
+      S.phase = "idle"; S.step = 0; S.logLines = []; S.selected = 0;
+      S.evidence = null;
+      if (S.videoUrl) { URL.revokeObjectURL(S.videoUrl); S.videoUrl = ""; }
+      S.fileName = ""; S.sourceLabel = "REFERENCE IR CLIP";
+      paint();
+    },
+
+    // live readouts
+    _fps: (perf.fps ?? 0).toFixed(1),
+    _frameMs: (perf.frame_ms ?? 0).toFixed(1),
+    _health: health,
+    _tracks: (ov.boxes || []).length,
+    _drops: st.queue_drops ?? 0,
+    _threat: st.threat || "INFO",
+    _calibrated: cam.metric,
+  };
 }
 
-function bandFor(conf) {
-  return conf >= 0.75 ? "HIGH" : conf >= 0.5 ? "MEDIUM" : "LOW";
-}
-
-function hatch(ctx, x, y, w, h, colour) {
-  // Low-confidence boxes get a hatched fill as well as a dotted stroke, so the
-  // uncertainty reads at a glance rather than requiring a squint at the dashes.
-  ctx.save();
-  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-  ctx.globalAlpha = 0.16; ctx.strokeStyle = colour; ctx.lineWidth = 1.2;
-  ctx.setLineDash([]);
-  for (let i = -h; i < w; i += 7) {
-    ctx.beginPath(); ctx.moveTo(x + i, y + h); ctx.lineTo(x + i + h, y); ctx.stroke();
+/* ── DOM patches the template cannot express ───────────────────────────── */
+function paintRefs(vm) {
+  const r = binder.refs;
+  if (r.fps) r.fps.textContent = vm._fps + " FPS";
+  if (r.frameMs) r.frameMs.textContent = vm._frameMs + " ms";
+  if (r.tracksDrops) r.tracksDrops.textContent =
+    `${vm._tracks} TRACKS · Q1 DROPS ${vm._drops}`;
+  if (r.alertCounts) r.alertCounts.textContent =
+    `${S.liveAlerts.length} ACTIVE · ${S.historyCount} IN HISTORY`;
+  if (r.calib) r.calib.textContent = vm._calibrated ? "H · CALIBRATED" : "PIXEL SPACE";
+  if (r.relay) {
+    const b = (S.status.relay_max_bytes ?? null);
+    r.relay.textContent = b ? b.toLocaleString() + " B" : "≤ 3,072 B";
   }
-  ctx.restore();
+  if (r.health) {
+    const ok = vm._health === "OK";
+    r.health.textContent = "HEALTH " + vm._health;
+    r.health.style.color = ok ? "#8ff0c2" : "#ff8f9a";
+    r.health.style.background = ok ? "rgba(47,217,138,.14)" : "rgba(255,43,61,.16)";
+    r.health.style.borderColor = ok ? "rgba(47,217,138,.45)" : "rgba(255,43,61,.5)";
+  }
+  if (r.sectorThreat) {
+    r.sectorThreat.textContent = vm._threat;
+    const c = THREAT_COLOUR[vm._threat] || THREAT_COLOUR.INFO;
+    r.sectorThreat.style.color = c;
+    const badge = r.sectorThreat.parentElement;
+    if (badge) {
+      badge.style.borderColor = c;
+      badge.style.background = THREAT_BG[vm._threat] || THREAT_BG.INFO;
+      const dot = badge.querySelector("span");
+      if (dot && dot !== r.sectorThreat) {
+        dot.style.background = c;
+        dot.style.boxShadow = `0 0 12px ${c}`;
+      }
+    }
+  }
+  if (r.stream && S.phase === "done" && !S.videoUrl && S.cameraId) {
+    const want = `/api/stream/${S.cameraId}`;
+    if (!r.stream.getAttribute("src")) r.stream.setAttribute("src", want);
+  }
 }
 
-/* ------------------------------------------------------------- rendering */
-function draw() {
-  const cv = $("#overlay");
-  const img = $("#video");
-  const o = state.overlay;
-  if (!cv || !img || !o) return;
+/* ── canvas overlay: F12 dual-axis ─────────────────────────────────────── */
+function drawOverlay() {
+  const cv = binder.refs.overlay;
+  const img = binder.refs.stream;
+  if (!cv || !S.overlay) return;
 
-  // The MJPEG frame is letterboxed by object-fit: contain. Map source pixels
-  // into displayed pixels or every box lands in the wrong place.
-  const cw = cv.clientWidth, ch = cv.clientHeight;
-  if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
   const ctx = cv.getContext("2d");
-  ctx.clearRect(0, 0, cw, ch);
+  ctx.clearRect(0, 0, w, h);
 
-  const nw = img.naturalWidth || 1280, nh = img.naturalHeight || 720;
-  const scale = Math.min(cw / nw, ch / nh);
-  const ox = (cw - nw * scale) / 2, oy = (ch - nh * scale) / 2;
+  // The MJPEG frame is object-fit:cover — mirror that mapping or every box
+  // lands in the wrong place.
+  const nw = (img && img.naturalWidth) || 1280;
+  const nh = (img && img.naturalHeight) || 720;
+  const scale = Math.max(w / nw, h / nh);
+  const ox = (w - nw * scale) / 2, oy = (h - nh * scale) / 2;
   const X = (x) => ox + x * scale, Y = (y) => oy + y * scale;
 
-  drawZones(ctx, X, Y, scale);
+  drawZones(ctx, X, Y);
 
-  for (const b of o.boxes || []) {
+  for (const b of S.overlay.boxes || []) {
     const colour = THREAT_COLOUR[b.threat] || THREAT_COLOUR.INFO;
-    const band = bandFor(b.confidence);
+    const band = b.confidence >= 0.75 ? "HIGH" : b.confidence >= 0.5 ? "MEDIUM" : "LOW";
     const [x1, y1, x2, y2] = b.bbox;
-    const x = X(x1), y = Y(y1), w = (x2 - x1) * scale, h = (y2 - y1) * scale;
+    const x = X(x1), y = Y(y1), bw = (x2 - x1) * scale, bh = (y2 - y1) * scale;
 
-    if (band === "LOW") hatch(ctx, x, y, w, h, colour);
+    if (band === "LOW") {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(x, y, bw, bh); ctx.clip();
+      ctx.globalAlpha = 0.18; ctx.strokeStyle = colour; ctx.lineWidth = 1.2;
+      for (let i = -bh; i < bw; i += 8) {
+        ctx.beginPath(); ctx.moveTo(x + i, y + bh); ctx.lineTo(x + i + bh, y); ctx.stroke();
+      }
+      ctx.restore();
+    }
 
     ctx.save();
-    bandStyle(ctx, band);
     ctx.strokeStyle = colour;
-    ctx.strokeRect(x, y, w, h);
-
-    // Corner brackets read as a targeting reticle and survive at small sizes.
-    ctx.setLineDash([]); ctx.lineWidth = 2.6; ctx.globalAlpha = 1;
-    const c = Math.min(13, w / 3, h / 3);
-    [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]
-      .forEach(([cx, cy, sx, sy]) => {
-        ctx.beginPath();
-        ctx.moveTo(cx + sx * c, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + sy * c);
-        ctx.stroke();
-      });
+    ctx.shadowColor = colour;
+    ctx.shadowBlur = band === "HIGH" ? 16 : 8;
+    if (band === "HIGH") { ctx.setLineDash([]); ctx.lineWidth = 2; }
+    else if (band === "MEDIUM") { ctx.setLineDash([7, 4]); ctx.lineWidth = 2; }
+    else { ctx.setLineDash([2, 4]); ctx.lineWidth = 1.6; }
+    ctx.strokeRect(x, y, bw, bh);
     ctx.restore();
 
-    drawLabel(ctx, b, x, y, colour, band);
+    // Label bar, in the design's idiom: solid fill, dark text, mono.
+    const bits = [`#${b.track_id}`, (b.group || "").toUpperCase(),
+                  Number(b.confidence).toFixed(2)];
+    if (b.footpoint_m) bits.push(`${b.footpoint_m[1].toFixed(1)} m`);
+    if (b.identity && b.identity.label === "FRIENDLY")
+      bits.push((b.identity.matched || "FRIENDLY").toUpperCase());
+    else if (b.identity && b.identity.label === "UNIDENTIFIED") bits.push("UNIDENTIFIED");
+    else if (b.identity && b.identity.label === "INSUFFICIENT_QUALITY")
+      bits.push("INSUFFICIENT QUALITY");
+    if (b.stance && b.stance !== "UNKNOWN" && b.stance !== "STANDING") bits.push(b.stance);
+    const label = bits.join(" · ");
 
-    // Footpoint marker: the point that is actually tested against geometry.
     ctx.save();
-    ctx.fillStyle = colour; ctx.globalAlpha = 0.9;
-    ctx.beginPath(); ctx.arc(X((x1 + x2) / 2), Y(y2), 3.2, 0, Math.PI * 2); ctx.fill();
+    ctx.font = "500 9.5px 'IBM Plex Mono', ui-monospace, monospace";
+    const tw = ctx.measureText(label).width + 14;
+    const ly = Math.max(0, y - 22);
+    ctx.fillStyle = colour;
+    ctx.fillRect(x, ly, tw, 19);
+    ctx.fillStyle = band === "LOW" ? "rgba(10,7,8,.9)" : "#0a0708";
+    ctx.fillText(label, x + 7, ly + 13);
     ctx.restore();
-  }
 
-  // VLM grounding results, when a grounding query has run.
-  for (const g of state.grounding || []) {
-    const [x1, y1, x2, y2] = g.bbox;
     ctx.save();
-    ctx.strokeStyle = "#b7ff54"; ctx.lineWidth = 2; ctx.setLineDash([9, 5]);
-    ctx.strokeRect(X(x1), Y(y1), (x2 - x1) * scale, (y2 - y1) * scale);
-    ctx.fillStyle = "#b7ff54"; ctx.font = "600 11px ui-monospace, monospace";
-    ctx.setLineDash([]);
-    ctx.fillText("VLM", X(x1) + 4, Y(y1) - 5);
+    ctx.fillStyle = colour;
+    ctx.beginPath(); ctx.arc(X((x1 + x2) / 2), Y(y2), 3, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 }
 
-function drawLabel(ctx, b, x, y, colour, band) {
-  // Operational group (person/vehicle/animal/bag) is what the operator
-  // reasons in. The raw detector class is kept in the evidence record -- on
-  // this camera's IR footage the parked car classifies as COCO `boat`, which
-  // is worth recording but not worth putting on the operator's screen.
-  const parts = [`#${b.track_id}`, b.group.toUpperCase(),
-                 `${Math.round(b.confidence * 100)}%`];
-  if (b.footpoint_m) parts.push(`${b.footpoint_m[1].toFixed(1)}m`);
-  if (b.identity && b.identity.label === "FRIENDLY") parts.push(b.identity.matched || "FRIENDLY");
-  else if (b.identity && b.identity.label === "UNIDENTIFIED") parts.push("UNIDENT");
-  if (b.stance && b.stance !== "UNKNOWN" && b.stance !== "STANDING") parts.push(b.stance);
-  const text = parts.join("  ");
-
-  ctx.save();
-  ctx.font = "600 11px ui-monospace, SFMono-Regular, monospace";
-  const w = ctx.measureText(text).width + 12;
-  const ly = Math.max(0, y - 19);
-  ctx.fillStyle = colour; ctx.globalAlpha = band === "LOW" ? 0.72 : 0.95;
-  ctx.fillRect(x, ly, w, 18);
-  ctx.globalAlpha = 1; ctx.fillStyle = "#08140b";
-  ctx.fillText(text, x + 6, ly + 13);
-  ctx.restore();
-}
-
-function drawZones(ctx, X, Y, scale) {
-  const z = state.zones[state.cameraId];
+function drawZones(ctx, X, Y) {
+  const z = S.zones;
   if (!z) return;
 
   for (const zone of z.zones || []) {
     if (!zone.points_px) continue;
     ctx.save();
-    ctx.strokeStyle = "rgba(183,255,84,.42)"; ctx.lineWidth = 1.4; ctx.setLineDash([6, 5]);
-    ctx.fillStyle = "rgba(183,255,84,.05)";
+    ctx.strokeStyle = "rgba(255,31,60,.32)";
+    ctx.setLineDash([6, 5]); ctx.lineWidth = 1.2;
+    ctx.fillStyle = "rgba(255,31,60,.05)";
     ctx.beginPath();
     zone.points_px.forEach(([px, py], i) =>
       i ? ctx.lineTo(X(px), Y(py)) : ctx.moveTo(X(px), Y(py)));
@@ -178,12 +516,11 @@ function drawZones(ctx, X, Y, scale) {
     if (!w.points_px) continue;
     const [[ax, ay], [bx, by]] = w.points_px;
     ctx.save();
-    ctx.strokeStyle = "#ff8c1a"; ctx.lineWidth = 2.4; ctx.setLineDash([]);
+    ctx.strokeStyle = "#ff2b3d"; ctx.lineWidth = 1.6;
+    ctx.setLineDash([12, 10]);
     ctx.beginPath(); ctx.moveTo(X(ax), Y(ay)); ctx.lineTo(X(bx), Y(by)); ctx.stroke();
+    ctx.setLineDash([]);
 
-    // Inbound arrow. The direction is resolved server-side and delivered
-    // already projected to pixels: metric Y and image y have opposite
-    // handedness, so deriving the normal here would draw it backwards.
     if (w.inbound_arrow_px) {
       const [[sx0, sy0], [tx0, ty0]] = w.inbound_arrow_px;
       const sx = X(sx0), sy = Y(sy0), tx = X(tx0), ty = Y(ty0);
@@ -195,9 +532,9 @@ function drawZones(ctx, X, Y, scale) {
       ctx.lineTo(tx - head * Math.cos(a + 0.4), ty - head * Math.sin(a + 0.4));
       ctx.stroke();
     }
-
-    ctx.font = "600 10px ui-monospace, monospace"; ctx.fillStyle = "#ff8c1a";
-    ctx.fillText(w.label || w.id, X(ax) + 8, Y(ay) - 7);
+    ctx.font = "500 9.5px 'IBM Plex Mono', ui-monospace, monospace";
+    ctx.fillStyle = "rgba(255,43,61,.85)";
+    ctx.fillText(`${w.label || w.id} · INBOUND`, X(ax) + 8, Y(ay) - 8);
     ctx.restore();
   }
 
@@ -205,419 +542,180 @@ function drawZones(ctx, X, Y, scale) {
     if (!p.points_px) continue;
     const [px, py] = p.points_px[0];
     ctx.save();
-    ctx.strokeStyle = "rgba(255,51,68,.6)"; ctx.lineWidth = 1.6; ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.arc(X(px), Y(py), 9, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "rgba(255,122,26,.7)"; ctx.lineWidth = 1.4;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.arc(X(px), Y(py), 10, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(X(px) - 6, Y(py)); ctx.lineTo(X(px) + 6, Y(py));
-    ctx.moveTo(X(px), Y(py) - 6); ctx.lineTo(X(px), Y(py) + 6); ctx.stroke();
-    ctx.font = "600 9.5px ui-monospace, monospace"; ctx.fillStyle = "rgba(255,51,68,.85)";
-    ctx.fillText(`${p.label} <${p.threshold_m}m`, X(px) + 12, Y(py) + 3);
+    ctx.beginPath();
+    ctx.moveTo(X(px) - 6, Y(py)); ctx.lineTo(X(px) + 6, Y(py));
+    ctx.moveTo(X(px), Y(py) - 6); ctx.lineTo(X(px), Y(py) + 6);
+    ctx.stroke();
+    ctx.font = "500 9px 'IBM Plex Mono', ui-monospace, monospace";
+    ctx.fillStyle = "rgba(255,122,26,.85)";
+    ctx.fillText(`${p.label || p.id} < ${p.threshold_m} m`, X(px) + 14, Y(py) + 3);
     ctx.restore();
   }
 }
 
-/* ------------------------------------------------------------------- HUD */
-function renderStatus(s) {
-  if (!s) return;
-  const bar = $("#threatbar");
-  bar.dataset.threat = s.threat || "INFO";
-  $("#threatlvl").textContent = s.threat || "INFO";
-  $("#threatsub").textContent =
-    s.live_alerts ? `${s.live_alerts} live alert${s.live_alerts === 1 ? "" : "s"}`
-                  : "sector clear";
-  if (typeof s.queue_drops === "number") {
-    const q = $("#chip-drops");
-    q.querySelector("b").textContent = s.queue_drops;
-    q.className = "chip" + (s.queue_drops > 0 ? " warn" : "");
-  }
-  if (s.counters) {
-    $("#chip-counters").querySelector("b").textContent =
-      `${s.counters.promoted}/${s.counters.cleared}`;
-  }
+/* ── paint ─────────────────────────────────────────────────────────────── */
+function paint() {
+  const vm = viewModel();
+  binder.handlers = vm;
+  binder.update(vm);
+  paintRefs(vm);
+  if (S.phase === "done") drawOverlay();
 }
 
-function renderOverlayHud(o) {
-  if (!o) return;
-  const p = o.perf || {};
-  $("#hud-fps").textContent = (p.fps ?? 0).toFixed(1);
-  $("#hud-detect").textContent = `${p.detect_ms ?? 0}ms`;
-  $("#hud-track").textContent = `${p.track_ms ?? 0}ms`;
-  $("#hud-logic").textContent = `${p.logic_ms ?? 0}ms`;
-  $("#hud-tracks").textContent = (o.boxes || []).length;
-  $("#hud-frame").textContent = o.frame_idx ?? 0;
-
-  const h = o.health || {};
-  const chip = $("#chip-health");
-  chip.querySelector("b").textContent = h.state || "--";
-  chip.className = "chip " + (h.state === "OK" ? "good"
-    : h.state === "DEGRADED" ? "warn" : "bad");
-  chip.title = h.detail || `blur ${h.blur} / ssim ${h.ssim}`;
-  $("#hud-blur").textContent = (h.blur ?? 0).toFixed(0);
-  $("#hud-ssim").textContent = (h.ssim ?? 0).toFixed(3);
-
-  // Unattended-baggage dwell is shown while the timer runs, not only when it
-  // expires -- an operator should see a countdown, not a surprise.
-  const bags = (o.bags || []).filter((b) => b.state !== "ORPHAN");
-  $("#hud-bags").textContent = bags.length
-    ? bags.map((b) => `#${b.track_id}:${b.state}`).join(" ")
-    : "none";
+/* ── run control ───────────────────────────────────────────────────────── */
+async function takeFile(file) {
+  if (!file) return;
+  S.fileName = file.name;
+  S.sourceLabel = file.name.toUpperCase();
+  S.videoUrl = URL.createObjectURL(file);
+  await start(file);
 }
 
-function renderAlerts() {
-  const box = $("#alerts");
-  const items = state.alerts;
-  box.innerHTML = "";
-  if (!items.length) {
-    box.appendChild(el("div", "empty",
-      "No active alerts.\nObservations are accumulating but none has met the confirmation threshold."));
-    return;
+async function start(file) {
+  S.phase = "running";
+  S.step = 0;
+  S.logLines = [];
+  S.startedAt = Date.now();
+  paint();
+
+  if (file) {
+    log(`ingesting ${file.name} · ${(file.size / 1e6).toFixed(1)} MB · read locally, never uploaded`);
+    const fd = new FormData();
+    fd.append("video", file);
+    try {
+      const r = await fetch("/api/source", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || "source rejected");
+      S.cameraId = j.camera_id;
+      log(`source swapped on ${j.camera_id} · pipeline restarted`);
+    } catch (err) {
+      log(`source could not be swapped (${err.message}) — continuing on the reference feed`);
+    }
+  } else {
+    log("reference clip selected · 1280×720 · 15 fps · IR · ~97 kbps");
   }
-  for (const a of items) {
-    const card = el("div", "alert" + (a.state === "CLEARED" ? " cleared" : "")
-      + (state.selected === a.alert_id ? " sel" : ""));
-    card.dataset.threat = a.threat;
-    card.onclick = () => selectAlert(a.alert_id);
 
-    const r1 = el("div", "row1");
-    r1.appendChild(el("span", "kind", a.kind.replace(/_/g, " ")));
-    r1.appendChild(el("span", "time", hhmmss(a.opened_at)));
-    card.appendChild(r1);
-
-    card.appendChild(el("div", "why", a.rationale || ""));
-
-    const meta = el("div", "meta");
-    const bandCls = a.confidence_band === "HIGH" ? "hi"
-      : a.confidence_band === "MEDIUM" ? "med" : "lo";
-    meta.appendChild(el("span", `pill ${bandCls}`,
-      `CONF ${Math.round(a.confidence * 100)}% ${a.confidence_band}`));
-    meta.appendChild(el("span", "pill", a.camera_id));
-    if (a.track_ids && a.track_ids.length)
-      meta.appendChild(el("span", "pill", `#${a.track_ids.join(",#")}`));
-    if (a.relay_sent) meta.appendChild(el("span", "pill relay", "RELAY <3KB"));
-    if (a.state === "CLEARED") meta.appendChild(el("span", "pill", "CLEARED"));
-    card.appendChild(meta);
-    box.appendChild(card);
-  }
+  // Progress is driven by real telemetry arriving over the socket, not by a
+  // timer. The lines below are emitted from measured values as they land.
+  await pollUntilReady();
 }
 
-async function selectAlert(id) {
-  state.selected = id;
-  renderAlerts();
-  setTab("evidence");
-  const box = $("#evidence");
-  box.innerHTML = "";
-  box.appendChild(el("div", "empty", "Loading evidence..."));
-  try {
-    const r = await fetch(`/api/alerts/${id}`);
-    if (!r.ok) throw new Error("not found");
-    renderEvidence(await r.json());
-  } catch (e) {
-    box.innerHTML = "";
-    box.appendChild(el("div", "empty", "Evidence could not be loaded."));
-  }
-}
+async function pollUntilReady() {
+  const t0 = Date.now();
+  const seen = new Set();
+  const tick = async () => {
+    if (S.phase !== "running") return;
+    try {
+      const st = await (await fetch("/api/status")).json();
+      S.status = st;
+      const cam = (st.cameras || [])[0] || {};
+      if (!S.cameraId) S.cameraId = cam.camera_id;
 
-function renderEvidence(d) {
-  const box = $("#evidence");
-  box.innerHTML = "";
-  const wrap = el("div", "evidence");
+      const say = (k, msg) => { if (!seen.has(k)) { seen.add(k); log(msg); } };
 
-  if (d.crop_path) {
-    const i = el("img"); i.src = `/evidence/${d.crop_path}`; i.alt = "subject crop";
-    wrap.appendChild(i);
-  }
-  if (d.keyframe_path) {
-    const i = el("img"); i.src = `/evidence/${d.keyframe_path}`; i.alt = "keyframe";
-    wrap.appendChild(i);
-  }
-  if (d.clip_path) {
-    const v = el("video");
-    v.src = `/evidence/${d.clip_path}`; v.controls = true; v.loop = true; v.muted = true;
-    wrap.appendChild(v);
-  }
+      if (cam.frames_processed > 0)
+        say("decode", `decode running · ${cam.frames_processed} frames · health ${cam.health}`);
+      if (cam.homography && cam.homography.calibrated)
+        say("h", `homography ${cam.homography.homography_id} · round-trip residual ${cam.homography.residual_m} m`);
+      if (cam.perf && cam.perf.fps)
+        say("fps", `perception steady · ${cam.perf.fps.toFixed(1)} FPS · detect ${cam.perf.detect_ms} ms · track ${cam.perf.track_ms} ms`);
+      if (cam.perf && cam.perf.logic_ms !== undefined)
+        say("logic", `spatial + temporal reasoning ${cam.perf.logic_ms} ms/frame`);
+      if (st.identity && st.identity.vectors)
+        say("id", `identity gallery loaded · ${st.identity.identities} enrolled · threshold ${st.identity.threshold}`);
+      if (cam.pending_candidates > 0)
+        say("obs", `${cam.pending_candidates} observation(s) accumulating · NOT alerts · awaiting confirmation`);
+      if (st.counters && st.counters.promoted > 0)
+        say("promo", `confirmation satisfied · ${st.counters.promoted} alert(s) promoted · evidence written`);
+      if (st.queue_drops > 0)
+        say("drop", `Q1 drop-oldest engaged · ${st.queue_drops} frames shed to hold latency`);
 
-  const t = el("table", "kvtable");
-  const add = (k, v) => {
-    if (v === null || v === undefined || v === "") return;
-    const tr = el("tr");
-    tr.appendChild(el("td", null, k));
-    tr.appendChild(el("td", null, String(v)));
-    t.appendChild(tr);
+      const ready = cam.frames_processed > 25 &&
+                    (st.counters?.promoted > 0 || Date.now() - t0 > 12000);
+      if (ready) {
+        log(`sector threat recomputed from the live alert set · ${st.threat}`);
+        await refreshAlerts();
+        S.phase = "done";
+        paint();
+        return;
+      }
+    } catch (e) { /* transient during restart */ }
+    paint();
+    setTimeout(tick, 700);
   };
-  add("alert id", d.alert_id);
-  add("kind", d.kind);
-  add("threat", d.threat);
-  add("confidence", `${(d.confidence * 100).toFixed(1)}% (${d.confidence_band})`);
-  add("state", d.state);
-  add("opened", d.opened_at);
-  add("cleared", d.cleared_at);
-  add("rationale", d.rationale);
-  add("observations", (d.observations || []).length);
-  if (d.geometry) {
-    add("zone", d.geometry.zone_label || d.geometry.zone_id);
-    add("direction", d.geometry.direction);
-    if (d.geometry.distance_m != null) add("distance", `${d.geometry.distance_m} m`);
-    add("metric", String(!!d.geometry.metric));
-  }
-  add("homography", d.homography_id);
-  if (d.model_ids) for (const [k, v] of Object.entries(d.model_ids)) add(`model:${k}`, v);
-  if (d.config_snapshot) {
-    add("profile", d.config_snapshot.profile);
-    if (d.config_snapshot.confirm)
-      add("confirm rule", `${d.config_snapshot.confirm.window_s}s / ratio ${d.config_snapshot.confirm.min_ratio} / min ${d.config_snapshot.confirm.min_hits}`);
-    if (d.config_snapshot.baggage)
-      add("dwell threshold", `${d.config_snapshot.baggage.dwell_s}s`);
-  }
-  wrap.appendChild(t);
-
-  for (const det of d.detections || []) {
-    const dt = el("table", "kvtable");
-    const add2 = (k, v) => {
-      if (v === null || v === undefined) return;
-      const tr = el("tr");
-      tr.appendChild(el("td", null, k)); tr.appendChild(el("td", null, String(v)));
-      dt.appendChild(tr);
-    };
-    add2("track", `#${det.track_id} ${det.class_name} (${det.group})`);
-    add2("detector conf", det.confidence);
-    add2("model", det.model_id);
-    add2("footpoint", det.footpoint_m ? `${det.footpoint_m[0]}, ${det.footpoint_m[1]} m` : null);
-    add2("edge clipped", String(det.edge_clipped));
-    if (det.identity) {
-      add2("identity", det.identity.label);
-      add2("similarity", det.identity.similarity);
-      add2("threshold", det.identity.threshold);
-    }
-    wrap.appendChild(dt);
-  }
-  box.appendChild(wrap);
+  tick();
 }
 
-/* ----------------------------------------------------------------- query */
-async function runQuery(text) {
-  const out = $("#qresult");
-  out.innerHTML = "";
-  out.appendChild(el("div", "qnote", "routing..."));
-  $("#qbtn").disabled = true;
-  state.grounding = null;
-
+/* ── data ──────────────────────────────────────────────────────────────── */
+async function refreshAlerts() {
   try {
-    const r = await fetch("/api/query", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        q: text, camera_id: state.cameraId,
-        alert_id: state.selected || undefined,
-      }),
-    });
-    renderQuery(await r.json());
-  } catch (e) {
-    out.innerHTML = "";
-    out.appendChild(el("div", "qerr", `Query failed: ${e.message}`));
-  } finally {
-    $("#qbtn").disabled = false;
-  }
+    const a = await (await fetch("/api/alerts?limit=40")).json();
+    S.liveAlerts = (a.live && a.live.length ? a.live : a.recent) || [];
+    S.historyCount = (a.recent || []).length;
+    try {
+      const s = await (await fetch("/api/stats")).json();
+      S.historyCount = s.alerts_total ?? S.historyCount;
+      S.status.relay_max_bytes = s.relay_max_bytes;
+    } catch (_) { /* stats optional */ }
+    if (S.liveAlerts.length && !S.evidence) loadEvidence(S.liveAlerts[0].alert_id);
+  } catch (_) { /* keep last good */ }
 }
 
-function renderQuery(d) {
-  const out = $("#qresult");
-  out.innerHTML = "";
-
-  const route = el("div", "qroute");
-  route.appendChild(el("span", null, `ROUTE: ${(d.route || "?").toUpperCase()}`));
-  if (d.backend) route.appendChild(el("span", "lat", d.backend));
-  if (d.latency_ms != null) route.appendChild(el("span", "lat", `${d.latency_ms} ms`));
-  out.appendChild(route);
-
-  if (d.ok === false) {
-    out.appendChild(el("div", "qerr", d.error || "unavailable"));
-    if (d.detail) out.appendChild(el("div", "qnote", d.detail));
-    if (d.fallback && d.fallback.answer) {
-      out.appendChild(el("div", "qnote", "Answered by the structured route instead:"));
-      out.appendChild(el("div", "qanswer", d.fallback.answer));
-    }
-    if (d.licence) out.appendChild(el("div", "qnote", `Licence: ${d.licence}`));
-    return;
-  }
-
-  if (d.answer && d.route !== "grounding") out.appendChild(el("div", "qanswer", d.answer));
-  if (d.sql) out.appendChild(el("div", "qsql", d.sql + "\n-- params: " + JSON.stringify(d.params)));
-
-  if (d.route === "grounding") {
-    state.grounding = d.boxes || [];
-    out.appendChild(el("div", "qanswer",
-      `${d.count} region${d.count === 1 ? "" : "s"} grounded for "${d.phrase}".`));
-    if (d.answer) out.appendChild(el("div", "qsql", d.answer.slice(0, 400)));
-    out.appendChild(el("div", "qnote", `${d.model_id} - ${d.licence}`));
-  }
-
-  if (d.rows && d.rows.length && d.route === "structured") {
-    const t = el("table", "kvtable");
-    for (const row of d.rows.slice(0, 12)) {
-      const tr = el("tr");
-      tr.appendChild(el("td", null, hhmmss(row.opened_at)));
-      tr.appendChild(el("td", null,
-        `${row.threat} ${row.kind} (${Math.round(row.confidence * 100)}%)`));
-      tr.onclick = () => selectAlert(row.alert_id);
-      tr.style.cursor = "pointer";
-      t.appendChild(tr);
-    }
-    out.appendChild(t);
-  }
-  if (d.rows && d.route === "identity") {
-    for (const row of d.rows) {
-      out.appendChild(el("div", "qnote",
-        `#${row.track_id} ${row.class_name}: ${row.label}` +
-        (row.similarity != null ? ` (sim ${row.similarity}, thr ${row.threshold})` : "") +
-        (row.note ? ` - ${row.note}` : "")));
-    }
-  }
+async function loadEvidence(id) {
+  try {
+    S.evidence = await (await fetch(`/api/alerts/${id}`)).json();
+  } catch (_) { S.evidence = null; }
+  paint();
 }
 
-/* ------------------------------------------------------------------ tabs */
-function setTab(name) {
-  state.tab = name;
-  document.querySelectorAll(".tabs button").forEach((b) =>
-    b.classList.toggle("on", b.dataset.tab === name));
-  $("#pane-live").hidden = name !== "live";
-  $("#pane-evidence").hidden = name !== "evidence";
-  $("#pane-system").hidden = name !== "system";
-  if (name === "system") renderSystem();
-}
-
-function renderSystem() {
-  const box = $("#system");
-  box.innerHTML = "";
-  const s = state.status || {};
-  const t = el("table", "kvtable");
-  const add = (k, v) => {
-    const tr = el("tr");
-    tr.appendChild(el("td", null, k)); tr.appendChild(el("td", null, String(v)));
-    t.appendChild(tr);
-  };
-  add("profile", s.profile);
-  add("offline (F15)", s.offline);
-  add("run id", (s.run_id || "").slice(0, 12));
-  add("pose / F16", s.pose_enabled ? "enabled" : "disabled");
-  for (const [k, v] of Object.entries(s.models || {})) add(`model:${k}`, v);
-  if (s.identity) {
-    add("re-id available", s.identity.embedder && s.identity.embedder.available);
-    add("gallery identities", s.identity.identities);
-    add("gallery vectors", s.identity.vectors);
-    add("sim threshold", s.identity.threshold);
-    if (s.identity.embedder && s.identity.embedder.reason)
-      add("re-id note", s.identity.embedder.reason);
-  }
-  const g = (state.routes.routes || {}).grounding || {};
-  add("F11 weights present", g.weights_present);
-  add("F11 loaded", g.loaded);
-  if (g.licence) add("F11 licence", g.licence);
-  if (g.error) add("F11 error", g.error);
-  box.appendChild(t);
-
-  const qt = el("table", "kvtable");
-  const hdr = el("tr");
-  hdr.appendChild(el("td", null, "QUEUE"));
-  hdr.appendChild(el("td", null, "pushed / dropped / peak / policy"));
-  qt.appendChild(hdr);
-  for (const q of s.queues || []) {
-    const tr = el("tr");
-    tr.appendChild(el("td", null, q.name));
-    tr.appendChild(el("td", null,
-      `${q.pushed} / ${q.dropped} / ${q.high_water} / ${q.policy}`));
-    qt.appendChild(tr);
-  }
-  box.appendChild(qt);
-
-  for (const c of s.cameras || []) {
-    const ct = el("table", "kvtable");
-    const add2 = (k, v) => {
-      const tr = el("tr");
-      tr.appendChild(el("td", null, k)); tr.appendChild(el("td", null, String(v)));
-      ct.appendChild(tr);
-    };
-    add2("camera", `${c.camera_id} (${c.name})`);
-    add2("health", c.health);
-    add2("frames in / processed", `${c.frames_in} / ${c.frames_processed}`);
-    add2("fps (measured)", c.perf.fps);
-    add2("calibrated", c.metric ? `yes (${c.homography.homography_id})` : "no - pixel space");
-    if (c.homography) add2("homography residual", `${c.homography.residual_m} m`);
-    add2("pending candidates", c.pending_candidates);
-    box.appendChild(ct);
-  }
-}
-
-/* -------------------------------------------------------------- websocket */
+/* ── socket ────────────────────────────────────────────────────────────── */
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
 
-  ws.onopen = () => {
-    $("#chip-link").className = "chip good";
-    $("#chip-link").querySelector("b").textContent = "LIVE";
-  };
-  ws.onclose = () => {
-    $("#chip-link").className = "chip bad";
-    $("#chip-link").querySelector("b").textContent = "LOST";
-    setTimeout(connect, 1500);
-  };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === "hello") {
-      state.zones = m.zones || {};
-      state.status = m.status || {};
-      state.routes = m.routes || {};
-      const cams = Object.keys(state.zones);
-      if (cams.length && !state.cameraId) {
-        state.cameraId = cams[0];
-        $("#video").src = `/api/stream/${state.cameraId}`;
-        $("#cam-name").textContent =
-          (state.status.cameras || []).find((c) => c.camera_id === state.cameraId)?.name
-          || state.cameraId;
-        const z = state.zones[state.cameraId];
-        $("#cal").innerHTML = z.metric
-          ? `HOMOGRAPHY <b>${z.homography.homography_id}</b><br><span class="est">SCALE ESTIMATED, NOT SURVEYED</span>`
-          : `<span class="est">UNCALIBRATED - PIXEL SPACE</span>`;
+      S.status = m.status || {};
+      const cams = Object.keys(m.zones || {});
+      if (cams.length) {
+        S.cameraId = S.cameraId || cams[0];
+        S.zones = m.zones[S.cameraId];
       }
-      renderSystem();
     } else if (m.type === "tick") {
-      const o = m.cameras[state.cameraId];
-      if (o) { state.overlay = o; renderOverlayHud(o); draw(); }
+      const o = m.cameras && m.cameras[S.cameraId];
+      if (o) S.overlay = o;
       if (m.status) {
-        state.status = { ...state.status, ...m.status };
-        renderStatus(m.status);
-        state.alerts = m.status.alerts || [];
-        renderAlerts();
+        Object.assign(S.status, m.status);
+        // Only replace the list while something is actually live. When the
+        // sector clears, keep the last set on screen rather than blanking the
+        // panel -- an operator glancing up needs to see what just happened,
+        // not an empty column.
+        if (m.status.alerts && m.status.alerts.length) {
+          S.liveAlerts = m.status.alerts;
+        }
       }
-    } else if (m.type === "alert") {
-      // Fires on open and close; the tick already carries the live set, so
-      // this only needs to handle the closed-alert flash.
-      if (m.phase === "opened" && m.alert.threat === "CRITICAL") {
-        document.body.animate(
-          [{ boxShadow: "inset 0 0 0 0 rgba(255,51,68,0)" },
-           { boxShadow: "inset 0 0 90px 0 rgba(255,51,68,.34)" },
-           { boxShadow: "inset 0 0 0 0 rgba(255,51,68,0)" }],
-          { duration: 850 });
-      }
+      if (S.phase === "done") paint();
+    } else if (m.type === "alert" && m.phase === "opened") {
+      refreshAlerts().then(paint);
     }
   };
-  setInterval(() => { if (ws.readyState === 1) ws.send("ping"); }, 15000);
+  ws.onclose = () => setTimeout(connect, 1500);
+  setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 15000);
 }
 
-/* ------------------------------------------------------------------ init */
-window.addEventListener("DOMContentLoaded", () => {
-  document.querySelectorAll(".tabs button").forEach((b) =>
-    (b.onclick = () => setTab(b.dataset.tab)));
-
-  $("#qform").onsubmit = (e) => {
-    e.preventDefault();
-    const v = $("#q").value.trim();
-    if (v) runQuery(v);
-  };
-  document.querySelectorAll(".suggests button").forEach((b) =>
-    (b.onclick = () => { $("#q").value = b.textContent; runQuery(b.textContent); }));
-
-  window.addEventListener("resize", draw);
-  setInterval(draw, 120);   // redraw between ticks so resize stays smooth
+/* ── boot ──────────────────────────────────────────────────────────────── */
+window.addEventListener("DOMContentLoaded", async () => {
+  binder = new Binder(document.body);
+  try { S.status = await (await fetch("/api/status")).json(); } catch (_) {}
+  const cam = (S.status.cameras || [])[0];
+  if (cam) S.cameraId = cam.camera_id;
+  paint();
   connect();
+  window.addEventListener("resize", () => { if (S.phase === "done") drawOverlay(); });
+  setInterval(() => { if (S.phase === "done") drawOverlay(); }, 120);
 });

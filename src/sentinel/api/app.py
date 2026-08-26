@@ -23,7 +23,16 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -95,6 +104,22 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
     if (UI_DIR / "static").exists():
         app.mount("/static", StaticFiles(directory=UI_DIR / "static"), name="static")
 
+    @app.middleware("http")
+    async def _no_store_ui(request: Request, call_next):
+        """Serve the interface uncached.
+
+        The operator console is edited in place during a build and a stale
+        cached bundle looks exactly like a broken feature -- the browser runs
+        yesterday's JavaScript against today's markup. The payload is a few
+        tens of kilobytes on localhost, so revalidating every load costs
+        nothing worth measuring.
+        """
+        response = await call_next(request)
+        if request.url.path.startswith("/static") or request.url.path == "/":
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
     # -- lifecycle -----------------------------------------------------------
     @app.on_event("startup")
     async def _startup() -> None:
@@ -134,8 +159,17 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
 
     # -- pages ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
-    async def index() -> str:
-        return (UI_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    async def index() -> HTMLResponse:
+        html = (UI_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+        # Stamp the asset URLs with the files' own mtimes. A Cache-Control
+        # header asks the browser to revalidate; a changed URL leaves it no
+        # choice. During a build a stale bundle is indistinguishable from a
+        # broken feature, so this is worth the two lines.
+        for name in ("app.css", "app.js"):
+            p = UI_DIR / "static" / name
+            v = int(p.stat().st_mtime) if p.exists() else 0
+            html = html.replace(f"/static/{name}", f"/static/{name}?v={v}")
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     # -- video ---------------------------------------------------------------
     @app.get("/api/stream/{camera_id}")
@@ -249,6 +283,56 @@ def create_app(cfg: SystemCfg | None = None) -> FastAPI:
         # A 3B-parameter forward pass would block the event loop for seconds.
         result = await asyncio.to_thread(router.route, text, frame, tracks, force)
         return JSONResponse(result, status_code=result.get("status", 200))
+
+    # -- source swap ---------------------------------------------------------
+    @app.post("/api/source")
+    async def swap_source(video: UploadFile = File(...)) -> dict:
+        """Point a camera at an uploaded clip and restart its pipeline.
+
+        The file is written to the local ingest directory and read from disk —
+        it is never forwarded anywhere. F15 still holds: this is a local file
+        handed to a local decoder.
+        """
+        suffix = Path(video.filename or "clip.mp4").suffix.lower()
+        if suffix not in {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}:
+            raise HTTPException(400, f"unsupported container: {suffix or 'none'}")
+
+        ingest = Path(cfg.root_dir) / "data" / "ingest"
+        ingest.mkdir(parents=True, exist_ok=True)
+        dest = ingest / f"upload_{int(time.time())}{suffix}"
+
+        size = 0
+        with dest.open("wb") as fh:
+            while chunk := await video.read(1 << 20):
+                size += len(chunk)
+                fh.write(chunk)
+        if size == 0:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(400, "empty file")
+
+        camera_id = next(iter(system.pipelines), None)
+        if camera_id is None:
+            raise HTTPException(503, "no camera pipeline to retarget")
+
+        pipe = system.pipelines[camera_id]
+        pipe.stop()
+        # Give the ingest and processing threads a moment to unwind before the
+        # source is rebound; restarting into a live decoder loop double-reads.
+        await asyncio.sleep(0.4)
+
+        pipe.cam.source = str(dest)
+        pipe.cam.loop = True
+        pipe._stop.clear()
+        pipe.q_decode._closed = False
+        pipe.tracker.reset()
+        pipe.spatial.reset()
+        pipe.temporal.reset()
+        pipe.frames_in = pipe.frames_processed = 0
+        pipe.start()
+
+        return {"ok": True, "camera_id": camera_id,
+                "path": str(dest.relative_to(Path(cfg.root_dir))),
+                "bytes": size}
 
     # -- evidence ------------------------------------------------------------
     @app.get("/evidence/{path:path}")
